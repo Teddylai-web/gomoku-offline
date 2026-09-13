@@ -1,0 +1,718 @@
+<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>离线五子棋</title><style>
+:root{--ink:#342419;--wood:#ecb35f;--line:#6b421e}*{box-sizing:border-box}body{margin:0;min-height:100vh;background:#f4efe7;color:var(--ink);font:15px -apple-system,BlinkMacSystemFont,"PingFang SC",sans-serif}.app{max-width:1180px;margin:auto;padding:24px;display:grid;grid-template-columns:220px minmax(400px,1fr);gap:26px}.top{grid-column:1/-1;display:flex;align-items:center;justify-content:space-between}.top h1{margin:0;font:700 30px Georgia,"Songti SC",serif}.status{padding:10px 16px;border-radius:99px;background:#fffdf8;box-shadow:0 4px 14px #492c1614;font-weight:700}.panel{padding:18px;background:#fffdf8;border:1px solid #e2d4c1;border-radius:16px;height:max-content;box-shadow:0 12px 30px #5a3b2014}label{display:block;font-weight:700;margin:0 0 12px}select,button{display:block;width:100%;margin-top:6px;padding:10px;border-radius:8px;border:1px solid #d8c8b4;background:#fff;font:inherit}button{margin-top:12px;background:#b65a2b;border-color:#a24820;color:#fff;font-weight:800;cursor:pointer}button.alt{background:#fff;color:#684938}.hint{font-size:13px;line-height:1.6;color:#765e4e}.board-wrap{padding:20px;background:linear-gradient(135deg,#8a5128,#a86431);border-radius:17px;box-shadow:0 16px 34px #4c2d1938}.board{display:grid;grid-template-columns:repeat(15,1fr);grid-template-rows:repeat(15,1fr);width:100%;max-width:700px;aspect-ratio:1;background:var(--wood);overflow:hidden}.cell{margin:0;height:100%;min-height:0;appearance:none;-webkit-appearance:none;border:0;background:transparent;padding:0;position:relative;cursor:crosshair;min-width:0}.cell::before,.cell::after{content:"";position:absolute;background:var(--line);z-index:0}.cell::before{height:1px;width:100%;top:50%;left:0}.cell::after{width:1px;height:100%;left:50%;top:0}.cell[data-r="0"]::after{top:50%;height:50%}.cell[data-r="14"]::after{height:50%}.cell[data-c="0"]::before{left:50%;width:50%}.cell[data-c="14"]::before{width:50%}.star::before{width:8px;height:8px;border-radius:50%;left:calc(50% - 4px);top:calc(50% - 4px);background:#5c351b}.stone{position:absolute;width:82%;height:82%;left:9%;top:9%;border-radius:50%;z-index:2;box-shadow:3px 5px 7px #3a21187a}.black{background:radial-gradient(circle at 31% 24%,#777,#262626 42%,#060606 78%)}.white{background:radial-gradient(circle at 31% 21%,#fff,#f5f2eb 43%,#b7b2a7)}.recent{outline:2px solid #d6672d;outline-offset:2px}.winning{box-shadow:0 0 0 3px #ffe172,0 0 16px #ffdf707a}.modal[hidden]{display:none}.modal{position:fixed;inset:0;z-index:5;display:grid;place-items:center;background:#24140a9c}.dialog{width:min(350px,calc(100% - 40px));padding:28px;text-align:center;background:#fffaf2;border-radius:18px;box-shadow:0 20px 50px #160a04aa}.dialog h2{font:700 28px Georgia,"Songti SC",serif;margin:0 0 8px}.dialog p{color:#755b4a}.confetti{position:fixed;top:-20px;width:10px;height:16px;z-index:8;animation:fall 1.8s linear forwards}@keyframes fall{to{transform:translate(var(--x),105vh) rotate(720deg);opacity:.1}}@media(max-width:720px){.app{grid-template-columns:1fr;padding:12px}.board{width:100%}.panel{order:2}.top h1{font-size:24px}}
+</style><main class="app"><header class="top"><h1>五子棋 <small>Gomoku</small></h1><div id="status" class="status">黑棋先行</div></header><aside class="panel"><label>模式<select id="mode"><option value="ai">玩家 vs AI</option><option value="local">本地双人</option></select></label><label>难度<select id="level"><option value="easy">简单</option><option value="medium" selected>中等</option><option value="hard">困难</option><option value="expert">专家</option></select></label><label>规则<select id="rules"><option value="freestyle">普通五子棋</option><option value="renju">禁手规则（黑棋）</option></select></label><label>AI 风格<select id="personality"><option value="balanced">均衡</option><option value="attack">进攻</option><option value="steady">稳健</option></select></label><label id="firstbox">先手<select id="first"><option value="human">我先手（黑棋）</option><option value="ai">AI 先手（黑棋）</option></select></label><button id="new">新游戏</button><button id="undo" class="alt">悔棋</button><p class="hint">简单：轻松对弈，基础攻防。中等：识别活三、跳活三、双三和四三，预判对手回应。困难：更深推演并延伸强制攻防，寻找组合进攻。专家：前 10 手快速落子，中后期最多思考 3 秒；在限时内优先推演关键攻防。<br>离线版 4.3 · 完全离线</p></aside><section class="board-wrap"><div id="board" class="board" role="grid" aria-label="15×15 五子棋棋盘"></div></section></main><div id="modal" class="modal" hidden><section class="dialog"><h2 id="result"></h2><p id="result-note"></p><button id="again">再来一局</button></section></div><script>
+/* Offline freestyle Gomoku. Tactical definitions: RIF beginner/advanced tutorials.
+   No Renju forbidden-move restrictions are imposed. One ply = one player's move. */
+var GomokuAI = (function () {
+  'use strict';
+  var N=15, DIR=[[1,0],[0,1],[1,1],[1,-1]], WIN=100000000;
+  var cache=new Map();
+  function inBoard(r,c){return r>=0&&r<N&&c>=0&&c<N;}
+  function shape(s){
+    if(cache.has(s))return cache.get(s);
+    var five=false, fours=new Map(), threes=new Set(), twos=0;
+    // Every window contains the newly placed stone at index 5.
+    for(var a=1;a<=5;a++){
+      var w=s.slice(a,a+5), stones=[], empty=[];
+      if(w.indexOf('2')>=0)continue;
+      for(var j=a;j<a+5;j++)(s[j]==='1'?stones:empty).push(j);
+      if(stones.length===5)five=true;
+      if(stones.length===4){var key=stones.join(',');if(!fours.has(key))fours.set(key,new Set());fours.get(key).add(empty[0]);}
+    }
+    // A genuine three can be extended to .1111. in this same line.
+    // This recognizes straight AND split threes, and excludes blocked/edge fakes.
+    for(var start=0;start<=5;start++){
+      if(s[start]!=='0'||s[start+5]!=='0'||5<=start||5>=start+5)continue;
+      var middle=s.slice(start+1,start+5);
+      if(middle.indexOf('2')>=0)continue;
+      var count=middle.split('1').length-1;
+      if(count===3)threes.add(start);
+      if(count===2)twos++;
+    }
+    var ends=new Set();fours.forEach(function(v){v.forEach(function(x){ends.add(x);});});
+    var result={five:five, four:fours.size, openFour:ends.size>=2, three:threes.size>0, two:twos>0};
+    if(cache.size>60000)cache.clear();cache.set(s,result);return result;
+  }
+  function analyze(board,r,c,p){
+    if(board[r][c])return {score:-1,win:false,fours:0,threes:0,openFour:false};
+    var win=false,fours=0,threes=0,openFour=false,twos=0;
+    for(var d=0;d<4;d++){
+      var s='',dr=DIR[d][0],dc=DIR[d][1];
+      for(var k=-5;k<=5;k++){
+        var rr=r+dr*k,cc=c+dc*k;
+        s+=k===0?'1':!inBoard(rr,cc)?'2':board[rr][cc]===p?'1':board[rr][cc]?'2':'0';
+      }
+      var t=shape(s);win=win||t.five;fours+=t.four;threes+=t.three?1:0;twos+=t.two?1:0;openFour=openFour||t.openFour;
+    }
+    var score=win?WIN:openFour||fours>=2?2000000:fours&&threes?600000:threes>=2?180000:fours?45000:threes?12000:twos?400:0;
+    score+=fours*100+threes*40+twos*8+14-Math.abs(r-7)-Math.abs(c-7);
+    return {score:score,win:win,fours:fours,threes:threes,openFour:openFour};
+  }
+  function candidates(board){
+    var marks=new Set(),occupied=0;
+    for(var r=0;r<N;r++)for(var c=0;c<N;c++)if(board[r][c]){
+      occupied++;
+      for(var dr=-2;dr<=2;dr++)for(var dc=-2;dc<=2;dc++){
+        var rr=r+dr,cc=c+dc;if(inBoard(rr,cc)&&!board[rr][cc])marks.add(rr*N+cc);
+      }
+    }
+    if(!occupied)return [{r:7,c:7}];
+    return Array.from(marks,function(k){return {r:Math.floor(k/N),c:k%N};});
+  }
+  function ranked(board,p){
+    return candidates(board).map(function(m){
+      m.attack=analyze(board,m.r,m.c,p);m.defend=analyze(board,m.r,m.c,3-p);
+      m.value=Math.max(m.attack.score,m.defend.score*1.05)+Math.min(m.attack.score,m.defend.score)*0.15;
+      return m;
+    }).sort(function(a,b){return b.value-a.value||a.r-b.r||a.c-b.c;});
+  }
+  function evaluate(options){
+    var own=0,enemy=0;
+    options.forEach(function(m){own=Math.max(own,m.attack.score);enemy=Math.max(enemy,m.defend.score);});
+    return own-enemy*1.1;
+  }
+  function choose(input,p,level,config){
+    var board=input.map(function(row){return row.slice();}),started=Date.now();config=config||{};
+    var settings=level==='expert'?{depth:10,ms:2700,width:16}:level==='hard'?{depth:4,ms:2200,width:12}:level==='medium'?{depth:2,ms:850,width:14}:{depth:1,ms:120,width:8};
+    var deadline=started+(config.ms||settings.ms),nodes=0,complete=0,timeout={};
+    var table=new Map(),hits=0,killers=[],principal=[],maxPly=0;
+    // Incremental pattern evaluation: a move only changes points on its four lines.
+    var incremental=level==='expert',scores=[null,[],[]],near=new Int16Array(225),hash=0,hash2=0,z1=[],z2=[],rng=748391;
+    function random32(){rng^=rng<<13;rng^=rng>>>17;rng^=rng<<5;return rng|0;}
+    if(incremental){
+      for(var k=0;k<450;k++){z1[k]=random32();z2[k]=random32();}
+      for(var r=0;r<N;r++)for(var c=0;c<N;c++){
+        var stone=board[r][c],index=r*N+c;
+        if(stone){hash^=z1[index*2+stone-1];hash2^=z2[index*2+stone-1];for(var dr=-2;dr<=2;dr++)for(var dc=-2;dc<=2;dc++)if(inBoard(r+dr,c+dc))near[(r+dr)*N+c+dc]++;}
+        else {scores[1][index]=analyze(board,r,c,1);scores[2][index]=analyze(board,r,c,2);}
+      }
+    }
+    function make(m,side){
+      board[m.r][m.c]=side;if(!incremental)return null;
+      var index=m.r*N+m.c,undo=[];hash^=z1[index*2+side-1];hash2^=z2[index*2+side-1];
+      for(var dr=-2;dr<=2;dr++)for(var dc=-2;dc<=2;dc++)if(inBoard(m.r+dr,m.c+dc))near[(m.r+dr)*N+m.c+dc]++;
+      for(var dir of DIR)for(var d=-5;d<=5;d++){
+        if(d===0)continue;var r=m.r+dir[0]*d,c=m.c+dir[1]*d;if(!inBoard(r,c)||board[r][c])continue;
+        var k=r*N+c;undo.push([k,scores[1][k],scores[2][k]]);scores[1][k]=analyze(board,r,c,1);scores[2][k]=analyze(board,r,c,2);
+      }
+      return undo;
+    }
+    function unmake(m,side,undo){
+      board[m.r][m.c]=0;if(!incremental)return;
+      var index=m.r*N+m.c;hash^=z1[index*2+side-1];hash2^=z2[index*2+side-1];
+      for(var dr=-2;dr<=2;dr++)for(var dc=-2;dc<=2;dc++)if(inBoard(m.r+dr,m.c+dc))near[(m.r+dr)*N+m.c+dc]--;
+      undo.forEach(function(x){scores[1][x[0]]=x[1];scores[2][x[0]]=x[2];});
+    }
+    function options(side){
+      var list=[];
+      if(incremental){
+        for(var k=0;k<225;k++){var r=Math.floor(k/N),c=k%N;if(board[r][c]||!near[k])continue;
+          var attack=scores[side][k],defend=scores[3-side][k];
+          list.push({r:r,c:c,attack:attack,defend:defend,value:Math.max(attack.score,defend.score*1.05)+Math.min(attack.score,defend.score)*0.15});
+        }
+        if(!list.length&&!board.some(function(row){return row.some(Boolean);}))list=[{r:7,c:7,attack:analyze(board,7,7,side),defend:analyze(board,7,7,3-side),value:0}];
+        list.sort(function(a,b){return b.value-a.value||a.r-b.r||a.c-b.c;});
+      }else list=ranked(board,side);
+      return list.filter(function(m){return !config.legal||config.legal(board,m.r,m.c,side);});
+    }
+    function check(){if(Date.now()>deadline)throw timeout;}
+    var roots=options(p);
+    function output(m,why){return {r:m.r,c:m.c,depth:complete,nodes:nodes,ms:Date.now()-started,reason:why,cacheHits:hits,targetDepth:settings.depth,maxPly:maxPly,line:principal};}
+    if(!roots.length)return null;
+    var wins=roots.filter(function(m){return m.attack.win;});
+    if(wins.length)return output(wins[0],'win');
+    var blocks=roots.filter(function(m){return m.defend.win;});
+    if(blocks.length)return output(blocks[0],'block-five');
+    if(roots.length===1)return output(roots[0],'opening');
+    if(level==='easy'){
+      var pool=roots.slice(0,Math.min(6,roots.length));
+      return output(pool[Math.floor((config.random||Math.random)()*pool.length)],'casual');
+    }
+    function negamax(side,depth,alpha,beta,ply,extension){
+      nodes++;maxPly=Math.max(maxPly,ply);check();
+      var key,entry,originalAlpha=alpha,requestedDepth=depth;
+      if(level==='expert'){
+        key=hash+':'+hash2+':'+side+':'+ply+':'+extension;
+        entry=table.get(key);
+        if(entry&&entry.depth>=depth){hits++;if(entry.flag==='exact')return entry.value;if(entry.flag==='lower')alpha=Math.max(alpha,entry.value);else beta=Math.min(beta,entry.value);if(alpha>=beta)return entry.value;}
+      }
+      var opts=options(side);if(!opts.length)return 0;
+      check();
+      var win=opts.find(function(m){return m.attack.win;});if(win)return WIN-ply;
+      var forced=opts.filter(function(m){return m.defend.win;});
+      if(forced.length>1)return -WIN+ply+1;
+      var tactical=null;
+      if(depth<=0){
+        if(level==='expert')tactical=opts.filter(function(m){return m.attack.fours||m.attack.threes>=2;});
+        if(!extension||(!forced.length&&(!tactical||!tactical.length)))return evaluate(opts);
+        depth=1;extension--;
+      }
+      var width=level==='expert'?(ply>=4?6:ply>=2?8:12):settings.width;
+      var list=forced.length?forced:(tactical||opts).slice(0,width),best=-Infinity,bestMove=null;
+      if(incremental){var preferred=entry&&entry.move,kill=killers[ply];list.sort(function(a,b){function bonus(m){var k=m.r*N+m.c;return k===preferred?2:k===kill?1:0;}return bonus(b)-bonus(a);});}
+      for(var i=0;i<list.length;i++){
+        var m=list[i],undo=make(m,side);
+        var value;try{
+          if(incremental&&i>0&&Number.isFinite(alpha)){
+            var reduce=depth>=3&&i>=3&&!forced.length&&m.attack.score<12000&&m.defend.score<12000;
+            value=-negamax(3-side,depth-1-(reduce?1:0),-alpha-1,-alpha,ply+1,extension);
+            if(reduce&&value>alpha)value=-negamax(3-side,depth-1,-alpha-1,-alpha,ply+1,extension);
+            if(value>alpha&&value<beta)value=-negamax(3-side,depth-1,-beta,-alpha,ply+1,extension);
+          }
+          else value=-negamax(3-side,depth-1,-beta,-alpha,ply+1,extension);
+        }finally{unmake(m,side,undo);}
+        if(value>best){best=value;bestMove=m.r*N+m.c;}alpha=Math.max(alpha,value);if(alpha>=beta){killers[ply]=m.r*N+m.c;break;}
+      }
+      if(key&&table.size<150000)table.set(key,{value:best,depth:requestedDepth,move:bestMove,flag:best<=originalAlpha?'upper':best>=beta?'lower':'exact'});
+      return best;
+    }
+    var best=roots[0],rootList=roots.slice(0,settings.width);
+    // Defensive candidates are ordered using the opponent's patterns too.
+    // Each completed iteration replaces the last result; interrupted work is discarded.
+    for(var depth=1;depth<=settings.depth;depth++){
+      var iterationBest=best,iterationScore=-Infinity,alpha=-Infinity,finished=true;
+      rootList.sort(function(a,b){return (b===best?1:0)-(a===best?1:0)||b.value-a.value;});
+      try{
+        for(var i=0;i<rootList.length;i++){
+          check();var m=rootList[i],undo=make(m,p);
+          var value;try{value=-negamax(3-p,depth-1,-Infinity,-alpha,1,level==='expert'?4:level==='hard'?4:1);}finally{unmake(m,p,undo);}
+          if(value>iterationScore){iterationScore=value;iterationBest=m;}alpha=Math.max(alpha,value);
+        }
+      }catch(e){if(e!==timeout)throw e;finished=false;}
+      if(!finished)break;best=iterationBest;complete=depth;
+      if(config.onProgress)config.onProgress(output(best,'search'));
+      if(iterationScore>WIN-100)break;
+    }
+    return output(best,'search');
+  }
+  return {analyze:analyze,choose:choose,candidates:candidates,version:'4.2',settings:{easy:1,medium:2,hard:4,expert:10}};
+}());
+
+
+(function(){const N=15,E=0,B=1,W=2,DIR=[[1,0],[0,1],[1,1],[1,-1]],$=id=>document.getElementById(id);let b,moves,turn,over,winCells,busy=false,epoch=0,matchId="";const board=$('board');const inside=(r,c)=>r>=0&&r<N&&c>=0&&c<N;const aiColor=()=>$('first').value==='ai'?B:W;const humanColor=()=>aiColor()===B?W:B;function reset(){if(window.gomokuCancelSearch)window.gomokuCancelSearch();matchId=Date.now()+"-"+Math.random();epoch++;b=Array.from({length:N},()=>Array(N).fill(E));moves=[];turn=B;over=0;winCells=[];busy=false;clearConfetti();$('modal').hidden=true;draw();if($('mode').value==='ai'&&aiColor()===B)setTimeout(aiMove,180)}function scan(r,c,p,dr,dc){let cells=[[r,c]],open=0;for(const s of[-1,1]){let x=r+dr*s,y=c+dc*s;while(inside(x,y)&&b[x][y]===p){cells.push([x,y]);x+=dr*s;y+=dc*s}if(inside(x,y)&&b[x][y]===E)open++}return{n:cells.length,open,cells}}function winningLine(r,c,p){for(const[d1,d2]of DIR){const q=scan(r,c,p,d1,d2);if(q.n>=5)return q.cells.slice(0,5)}return null}function patterns(r,c,p){if(b[r][c]!==E)return{score:-1e12,open3:0};b[r][c]=p;let score=0,open3=0;for(const[d1,d2]of DIR){const q=scan(r,c,p,d1,d2);if(q.n>=5)score+=1e9;else if(q.n===4)score+=q.open===2?180000:q.open===1?26000:0;else if(q.n===3){if(q.open===2){score+=10000;open3++}else if(q.open===1)score+=1000}else if(q.n===2)score+=q.open===2?180:30}if(open3>=2)score+=140000;b[r][c]=E;return{score,open3}}function choose(){return GomokuPro.chooseAI(b,aiColor(),$('level').value,$('personality').value,$('rules').value)}function place(r,c,p){if(over||!inside(r,c)||b[r][c]!==E)return false;const foul=GomokuPro.forbidden(b,r,c,p,$('rules').value);if(foul){$('status').textContent=foul.type+'：请换一个位置';return false;}b[r][c]=p;moves.push({r,c,p});const line=winningLine(r,c,p);if(line){over=p;winCells=line}else if(moves.length===N*N)over=-1;else turn=p===B?W:B;return true}function draw(){if(window.gomokuCapture)window.gomokuCapture({id:matchId,moves:moves,over:over,mode:$('mode').value,first:$('first').value});board.innerHTML='';const last=moves.at(-1);for(let r=0;r<N;r++)for(let c=0;c<N;c++){const cell=document.createElement('button');cell.className='cell'+(([3,3],[3,11],[7,7],[11,3],[11,11]).some(x=>x[0]===r&&x[1]===c)?' star':'');cell.dataset.r=r;cell.dataset.c=c;cell.onclick=()=>humanMove(r,c);if(b[r][c]){const st=document.createElement('i');let won=winCells.some(x=>x[0]===r&&x[1]===c);st.className='stone '+(b[r][c]===B?'black':'white')+(last&&last.r===r&&last.c===c?' recent':'')+(won?' winning':'');cell.append(st)}board.append(cell)}$('firstbox').style.display=$('mode').value==='ai'?'block':'none';if(over){const label=over===B?'黑棋获胜！':'白棋获胜！';$('status').textContent=over===-1?'和棋':label;showResult(label)}else{const human=$('mode').value==='ai'?humanColor():turn; $('status').textContent=turn===human?'轮到你（'+(turn===B?'黑棋':'白棋')+'）':$('mode').value==='ai'?'AI 思考中…':'轮到玩家 '+(turn===B?'1':'2')}}function showResult(label){$('result').textContent=label;$('result-note').textContent=over===-1?'棋盘已满。':'获胜的五颗棋子已高亮。';$('modal').hidden=false;if(over>0)confetti()}function aiMove(){if(over||$('mode').value!=='ai'||turn!==aiColor())return;busy=true;draw();const ticket=epoch;setTimeout(()=>{if(ticket!==epoch)return;window.gomokuSearch(b,aiColor(),$('level').value,$('personality').value,$('rules').value,function(m){if(ticket!==epoch)return;busy=false;if(m)place(m.r,m.c,aiColor());draw();if(m&&$('level').value==='expert'&&!over){$('status').textContent+=' · '+(m.reason==='proven-forcing-line'?'已验证 '+m.depth+' 手进攻路线':'已完成 '+m.depth+' 手预判')}})},80)}function humanMove(r,c){if(busy||over||($('mode').value==='ai'&&turn!==humanColor()))return;if(place(r,c,turn)){draw();if(!over&&$('mode').value==='ai')aiMove()}}function confetti(){clearConfetti();const colors=['#f05050','#ffd34d','#4db6ff','#5ccf7a','#bf76e8'];for(let i=0;i<70;i++){const d=document.createElement('i');d.className='confetti';d.style.left=Math.random()*100+'vw';d.style.background=colors[i%colors.length];d.style.setProperty('--x',(Math.random()*260-130)+'px');d.style.animationDelay=(Math.random()*.45)+'s';document.body.append(d)}}function clearConfetti(){document.querySelectorAll('.confetti').forEach(x=>x.remove())}$('new').onclick=reset;$('again').onclick=reset;$('mode').onchange=reset;$('level').onchange=reset;$('first').onchange=reset;$('rules').onchange=reset;$('personality').onchange=reset;$('undo').onclick=()=>{if(busy||!moves.length)return;let n=$('mode').value==='ai'?2:1;while(n--&&moves.length){const m=moves.pop();b[m.r][m.c]=E}over=0;winCells=[];turn=moves.length?moves.at(-1).p===B?W:B:B;draw()};reset()})()
+</script><script>
+/* Original examples and summaries based on RIF tutorials; freely played Gomoku. */
+/* Original examples and summaries based on RIF tutorials; freely played Gomoku. */
+/* Original examples and summaries based on RIF tutorials; freely played Gomoku. */
+var GomokuReview = (function(){
+  function blank(){return Array.from({length:15},function(){return Array(15).fill(0);});}
+  function position(moves,n){var b=blank();moves.slice(0,n).forEach(function(m){b[m.r][m.c]=m.p;});return b;}
+  function points(b,p,test){return GomokuAI.candidates(b).filter(function(m){return test(GomokuAI.analyze(b,m.r,m.c,p));});}
+  function wins(b,p){return points(b,p,function(x){return x.win;});}
+  function coord(m){return String.fromCharCode(65+m.c)+(15-m.r);}
+  function inspect(moves,i){
+    var m=moves[i],b=position(moves,i),own=wins(b,m.p),foe=wins(b,3-m.p),a=GomokuAI.analyze(b,m.r,m.c,m.p);
+    b[m.r][m.c]=m.p;
+    if(a.win)return {kind:'成五',text:'这手直接成五，结束对局。',severity:0};
+    if(own.length)return {kind:'错过直接获胜',text:'当时可在 '+own.map(coord).join(' / ')+' 直接成五；实际走了 '+coord(m)+'。',severity:3,suggestion:own[0]};
+    if(foe.length&&wins(b,3-m.p).length)return {kind:'漏防成五',text:'对手下一手就能成五；这手未消除该威胁。'+(foe.length>1?'对手原本已有多个成五点，此时单靠堵一处已救不回来。':'当时应优先处理 '+coord(foe[0])+'。'),severity:3,suggestion:foe.length===1?foe[0]:null};
+    var dangerous=points(b,3-m.p,function(x){return x.openFour||x.fours>=2;});
+    if(dangerous.length&&!wins(b,m.p).length)return {kind:'留下活四入口',text:'对手可在 '+dangerous.slice(0,3).map(coord).join(' / ')+' 制造两路成五威胁。这是需要回看的关键点，不一定是唯一失误。',severity:2};
+    var forks=points(b,3-m.p,function(x){return x.threes>=2||(x.fours&&x.threes);});
+    if(forks.length&&!wins(b,m.p).length)return {kind:'留下组合进攻',text:'对手在 '+forks.slice(0,3).map(coord).join(' / ')+' 有双三或四三候选；还需结合先手与反击判断。',severity:1};
+    return {kind:'未检出直接漏招',text:'局部检查没有发现漏防成五或明显组合入口；这不等于这手最优。',severity:0};
+  }
+  // Proves only forcing-four lines. Every defender reply is forced, or two
+  // distinct winning points prove no single blocking move can save the game.
+  function shortLine(input,p,ms,maxPlies){
+    var b=input.map(function(r){return r.slice();}),deadline=Date.now()+(ms||600),expired={};
+    function solve(depth){
+      if(Date.now()>deadline)throw expired;
+      var w=wins(b,p);if(w.length)return [Object.assign({p:p},w[0])];
+      if(depth<3||wins(b,3-p).length)return null;
+      var attacks=points(b,p,function(x){return x.fours>0;});
+      for(var m of attacks){
+        b[m.r][m.c]=p;
+        try{
+          if(wins(b,3-p).length)continue;
+          var next=wins(b,p);
+          if(next.length>=2)return [Object.assign({p:p},m),Object.assign({p:3-p},next[0]),Object.assign({p:p},next[1])];
+          if(next.length===1){var d=next[0];b[d.r][d.c]=3-p;
+            var tail;try{tail=solve(depth-2);}finally{b[d.r][d.c]=0;}
+            if(tail)return [Object.assign({p:p},m),Object.assign({p:3-p},d)].concat(tail);
+          }
+        }finally{b[m.r][m.c]=0;}
+      }return null;
+    }
+    try{for(var depth=1;depth<=(maxPlies||7);depth+=2){var line=solve(depth);if(line)return {line:line,proven:true};}}
+    catch(e){if(e!==expired)throw e;return {line:[],proven:false,timeout:true};}
+    return {line:[],proven:false};
+  }
+  return {blank:blank,position:position,inspect:inspect,shortLine:shortLine,coord:coord};
+}());
+
+(function(){
+  var $=function(id){return document.getElementById(id);}, panel, snapshot,step=0,token=0,analysis=null,branch=[],branchStep=0;
+  var source='https://www.renju.net/rules/',advanced='https://gomoku.renju.net/advanced/';
+  var lessons=[
+    {name:'活三：先看能否成活四',text:'判断活三，不只是数出三颗子，而是检查再落一子能否形成两端可成五的活四。没有更快的成五反击时，应处理这个威胁。',black:[[7,6],[7,7],[7,8]],white:[],answer:[7,5],why:'在 F8 落黑子形成活四，E8 与 J8 都是下一手成五点。'},
+    {name:'跳活三：空隙也是关键点',text:'三颗棋可以中间隔一个空点。填空后若得到活四，它就是有威胁的跳活三。',black:[[7,5],[7,6],[7,8]],white:[],answer:[7,7],why:'补 H8 后形成连续四子；两端均未被封住。'},
+    {name:'假活三：不要见三就堵',text:'边界或对方棋子可能让三颗子无法延伸成活四。要看延伸后的两端，而不只看现在两侧的空位。',black:[[7,6],[7,7],[7,8]],white:[[7,4],[7,10]],answer:null,why:'试着向两侧延伸：四连总有一端被白棋封住，所以这里不是真活三。',advanced:true},
+    {name:'冲四：找到唯一成五点',text:'四颗子只要有一处补子能成五，就构成直接威胁；空位可以在中间，不必在两端。',black:[[7,4],[7,5],[7,7],[7,8]],white:[[7,3]],answer:[7,6],why:'G8 是补齐五连的空点；防守方应优先占住它。'},
+    {name:'双活三：一手两条攻击线',text:'一个落点同时生成两条真活三。先确认两路都能成活四，再检查对方有没有更快的成五或冲四反击。',black:[[7,6],[7,8],[6,7],[8,7]],white:[],answer:[7,7],why:'H8 同时形成横向和纵向活三。此 App 使用无禁手规则，黑白均可走。'},
+    {name:'四三：强制应手后接续进攻',text:'同一手同时形成四和活三，是常见组合。对方忙于挡成五时，另一条进攻线可能继续扩展；仍需核对防守点能否兼顾两路。',black:[[7,4],[7,5],[7,6],[6,7],[8,7]],white:[[7,3]],answer:[7,7],why:'H8 横向冲四、纵向活三。先迫使白棋处理 I8，再研究纵向的延伸。'},
+    {name:'双四：两个成五点',text:'一手产生两条四线，可以让对方无法同时封住所有成五点。先确认它们不是同一个空点，并检查对手能否立刻成五。',black:[[7,4],[7,5],[7,6],[4,7],[5,7],[6,7]],white:[[7,3],[3,7]],answer:[7,7],why:'H8 形成横、竖两个冲四，成五点分别为 I8 和 H7。'},
+    {name:'连续进攻：每一步都核对回应',text:'把冲四、活四、四三串起来时，需要逐步核对对方的应手与反击。复盘中的短线搜索专门验证强制冲四序列，未找到不代表不存在其他胜法。',black:[[7,6],[7,7],[7,8]],white:[[5,5]],answer:[7,5],why:'F8 后两端可成五；白棋堵一端，黑棋从另一端获胜。这里展示的是短线例子，并非固定开局口诀。'}
+  ];
+  var history=[];
+  try{var saved=JSON.parse(localStorage.getItem('gomoku-review-v1')||'[]');if(Array.isArray(saved))history=saved.filter(function(g){return g&&Array.isArray(g.moves)&&g.moves.every(function(m){return Number.isInteger(m.r)&&Number.isInteger(m.c)&&m.r>=0&&m.r<15&&m.c>=0&&m.c<15&&(m.p===1||m.p===2);});}).slice(0,20);}catch(e){}
+  var current=null;
+  window.gomokuCapture=function(g){
+    current=JSON.parse(JSON.stringify(g));if(!g.moves.length)return;
+    var record=JSON.parse(JSON.stringify(g));record.date=new Date().toLocaleString();
+    history=history.filter(function(x){return x.id!==record.id;});history.unshift(record);history=history.slice(0,20);
+    try{localStorage.setItem('gomoku-review-v1',JSON.stringify(history));}catch(e){}
+  };
+  function text(id,s){$(id).textContent=s;}
+  function el(tag,s,parent){var x=document.createElement(tag);if(s)x.textContent=s;if(parent)parent.appendChild(x);return x;}
+  function button(s,fn,parent){var x=el('button',s,parent);x.onclick=fn;return x;}
+  function close(){token++;panel.hidden=true;}
+  function shell(title){token++;panel.hidden=false;panel.innerHTML='';var head=el('header',null,panel);el('h2',title,head);button('返回对局',close,head);return el('div',null,panel);}
+  function diagram(target,moves,n,mark){
+    target.innerHTML='';var svg=document.createElementNS('http://www.w3.org/2000/svg','svg');svg.setAttribute('viewBox','0 0 480 480');svg.setAttribute('role','img');svg.setAttribute('aria-label','复盘棋盘，A 到 O 列，1 到 15 行');target.appendChild(svg);
+    function shape(tag,attrs,label){var x=document.createElementNS(svg.namespaceURI,tag);Object.keys(attrs).forEach(function(k){x.setAttribute(k,attrs[k]);});if(label)x.textContent=label;svg.appendChild(x);return x;}
+    shape('rect',{width:480,height:480,fill:'#e9b767'});
+    for(var i=0;i<15;i++){var q=30+i*30;shape('path',{d:'M30 '+q+'H450 M'+q+' 30V450',stroke:'#785129','stroke-width':1});shape('text',{x:q,y:19,'font-size':11,'text-anchor':'middle'},String.fromCharCode(65+i));shape('text',{x:12,y:q+4,'font-size':11,'text-anchor':'middle'},String(15-i));}
+    moves.slice(0,n).forEach(function(m,j){shape('circle',{cx:30+m.c*30,cy:30+m.r*30,r:12,fill:m.p===1?'#242424':'#fffaf0',stroke:j===n-1?'#d96123':'#99866d','stroke-width':j===n-1?3:1});shape('text',{x:30+m.c*30,y:34+m.r*30,'font-size':10,'text-anchor':'middle',fill:m.p===1?'white':'#30261c'},String(j+1));});
+    if(mark)shape('circle',{cx:30+mark.c*30,cy:30+mark.r*30,r:14,fill:'none',stroke:'#008978','stroke-width':3});
+  }
+  function teaching(){
+    var box=shell('五子棋教学'),select=el('select',null,box),area=el('div',null,box);
+    lessons.forEach(function(l,i){var o=el('option',l.name,select);o.value=i;});
+    select.onchange=show;show();
+    function show(){var l=lessons[Number(select.value)||0];area.innerHTML='';el('p',l.text,area);var board=el('div',null,area);board.className='study-board';var ms=l.black.map(function(x){return {r:x[0],c:x[1],p:1};}).concat(l.white.map(function(x){return {r:x[0],c:x[1],p:2};}));diagram(board,ms,ms.length);button(l.answer?'显示关键落点':'显示判断依据',function(){diagram(board,ms,ms.length,l.answer?{r:l.answer[0],c:l.answer[1]}:null);why.textContent=l.why;},area);var why=el('p','先自己观察，再显示讲解。',area);el('p','原创示意局面；文字为教材要点的概括。无禁手五子棋与连珠禁手规则不同。',area);var a=el('a','来源：国际连珠联盟 '+(l.advanced?'进阶教程':'基础教材'),area);a.href=l.advanced?advanced:source;el('p','内容和棋图已内置，可离线学习；原文链接需要联网。',area);}
+  }
+  function review(){
+    var box=shell('复盘分析'),select=el('select',null,box),records=[];
+    if(current&&current.moves.length)records.push(current);
+    history.forEach(function(g){if(!records.some(function(x){return x.id===g.id;}))records.push(g);});
+    if(!records.length){el('p','先下一局棋，再来这里逐手复盘。棋谱会保留最近 20 局。',box);return;}
+    records.forEach(function(g,i){var opt=el('option',(i===0&&current&&g.id===current.id?'当前对局':g.date||'已保存对局')+' · '+g.moves.length+' 手',select);opt.value=i;});
+    var controls=el('div',null,box);controls.className='study-controls';
+    button('首手前',function(){step=0;show();},controls);button('上一手',function(){step=Math.max(0,step-1);show();},controls);button('下一手',function(){step=Math.min(snapshot.moves.length,step+1);show();},controls);button('终局',function(){step=snapshot.moves.length;show();},controls);
+    var range=el('input',null,box);range.type='range';range.min=0;range.step=1;
+    var caption=el('p',null,box),board=el('div',null,box);board.className='study-board';
+    var actions=el('div',null,box);actions.className='study-controls';
+    button('分析这一手 / 找短线',analyze,actions);button('解析整局关键失误',whole,actions);
+    var output=el('div',null,box),branchControls=el('div',null,box);branchControls.className='study-controls';
+    var findings=el('div',null,box);
+    range.oninput=function(){step=Number(range.value);show();};
+    select.onchange=load;load();
+    function load(){token++;snapshot=JSON.parse(JSON.stringify(records[Number(select.value)||0]));step=snapshot.moves.length;range.max=step;findings.innerHTML='';show();}
+    function show(){token++;analysis=null;branch=[];output.innerHTML='';branchControls.innerHTML='';range.value=step;caption.textContent='第 '+step+' / '+snapshot.moves.length+' 手 · '+(step?((snapshot.moves[step-1].p===1?'黑':'白')+' '+GomokuReview.coord(snapshot.moves[step-1])):'空棋盘');diagram(board,snapshot.moves,step);}
+    function analyze(){
+      var ticket=++token,index=step?step-1:0,b=GomokuReview.position(snapshot.moves,index),m=snapshot.moves[index];
+      output.textContent='正在本地分析…';branchControls.innerHTML='';
+      setTimeout(function(){if(ticket!==token)return;
+        var check=GomokuReview.inspect(snapshot.moves,index);output.innerHTML='';el('p','第 '+(index+1)+' 手：'+check.kind+'。'+check.text,output);
+        var hint=GomokuAI.choose(b,m.p,'hard',{ms:750});
+        if(hint){el('p','建议考虑 '+GomokuReview.coord(hint)+'（'+hint.depth+' 层已完成搜索；有限搜索建议，不保证最优）。绿色圈为建议点，图中显示落子前局面。',output);diagram(board,snapshot.moves,index,hint);}
+        var proof=GomokuReview.shortLine(b,m.p,650);
+        if(proof.proven){branch=proof.line;branchStep=0;var actual=-1;for(var k=index;k<snapshot.moves.length;k++){if(snapshot.moves[k].p===m.p){var bb=GomokuReview.position(snapshot.moves,k);if(GomokuAI.analyze(bb,snapshot.moves[k].r,snapshot.moves[k].c,m.p).win){actual=k-index+1;break;}}}
+          el('p','找到已验证的强制胜法，双方合计 '+branch.length+' 手。'+(actual>branch.length?'比实战成五少 '+(actual-branch.length)+' 手。':'这是一条可行短线，不声称比实战更短。')+'仅在连续冲四类型、最多 7 手内搜索；双端成五处展示一种防守分支。',output);
+          button('路线起点',function(){branchStep=0;branchDraw();},branchControls);button('演示下一手',function(){branchStep=Math.min(branch.length,branchStep+1);branchDraw();},branchControls);
+          el('p',branch.map(function(x,i){return (i+1)+'.'+(x.p===1?'黑':'白')+GomokuReview.coord(x);}).join(' → '),output);
+        }else el('p','未在时间预算内找到最多 7 手的强制冲四胜法；不代表没有其他获胜路线。',output);
+        function branchDraw(){diagram(board,snapshot.moves.slice(0,index).concat(branch),index+branchStep);caption.textContent='建议路线 '+branchStep+' / '+branch.length+' 手（不改变实战）';}
+      },30);
+    }
+    function whole(){var ticket=++token,i=0,count=0;findings.innerHTML='';var status=el('p','正在逐手检查…',findings);var loser=snapshot.over>0?3-snapshot.over:0;
+      function next(){if(ticket!==token)return;if(i>=snapshot.moves.length){status.textContent='检查完成：发现 '+count+' 处需回看的局部问题。'+(loser?'优先列出败方；不将局部漏招等同于唯一败因。':'对局未分胜负，检查双方。');return;}
+        var n=i++,m=snapshot.moves[n];if(!loser||m.p===loser){var v=GomokuReview.inspect(snapshot.moves,n);if(v.severity){count++;button('第 '+(n+1)+' 手 · '+v.kind,function(){step=n+1;show();analyze();},findings);el('p',v.text,findings);}}
+        status.textContent='已检查 '+i+' / '+snapshot.moves.length+' 手';setTimeout(next,0);
+      }next();
+    }
+  }
+  var style=el('style',null,document.head);style.textContent='.study-panel[hidden]{display:none}.study-panel{position:fixed;inset:0;background:#f7f1e7;z-index:20;overflow:auto;padding:24px;color:#35251b}.study-panel>div{max-width:760px;margin:auto}.study-panel header{display:flex;justify-content:space-between;align-items:center;max-width:900px;margin:auto}.study-panel header button{width:auto}.study-panel p{line-height:1.7}.study-panel .study-board{max-width:490px;margin:14px auto}.study-panel svg{width:100%;display:block}.study-controls{display:flex;gap:8px;flex-wrap:wrap}.study-controls button{width:auto;flex:1}.study-panel input[type=range]{width:100%}.study-panel a{color:#895029}';
+  panel=el('section',null,document.body);panel.className='study-panel';panel.hidden=true;
+  var main=document.querySelector('.panel');button('五子棋教学',teaching,main);button('复盘 / 历史棋谱',review,main);
+  button('复盘本局',function(){$('modal').hidden=true;review();},document.querySelector('.dialog'));
+}());
+
+</script><script id="gomoku-worker-source" type="text/plain">/* Offline freestyle Gomoku. Tactical definitions: RIF beginner/advanced tutorials.
+   No Renju forbidden-move restrictions are imposed. One ply = one player's move. */
+var GomokuAI = (function () {
+  'use strict';
+  var N=15, DIR=[[1,0],[0,1],[1,1],[1,-1]], WIN=100000000;
+  var cache=new Map();
+  function inBoard(r,c){return r>=0&&r<N&&c>=0&&c<N;}
+  function shape(s){
+    if(cache.has(s))return cache.get(s);
+    var five=false, fours=new Map(), threes=new Set(), twos=0;
+    // Every window contains the newly placed stone at index 5.
+    for(var a=1;a<=5;a++){
+      var w=s.slice(a,a+5), stones=[], empty=[];
+      if(w.indexOf('2')>=0)continue;
+      for(var j=a;j<a+5;j++)(s[j]==='1'?stones:empty).push(j);
+      if(stones.length===5)five=true;
+      if(stones.length===4){var key=stones.join(',');if(!fours.has(key))fours.set(key,new Set());fours.get(key).add(empty[0]);}
+    }
+    // A genuine three can be extended to .1111. in this same line.
+    // This recognizes straight AND split threes, and excludes blocked/edge fakes.
+    for(var start=0;start<=5;start++){
+      if(s[start]!=='0'||s[start+5]!=='0'||5<=start||5>=start+5)continue;
+      var middle=s.slice(start+1,start+5);
+      if(middle.indexOf('2')>=0)continue;
+      var count=middle.split('1').length-1;
+      if(count===3)threes.add(start);
+      if(count===2)twos++;
+    }
+    var ends=new Set();fours.forEach(function(v){v.forEach(function(x){ends.add(x);});});
+    var result={five:five, four:fours.size, openFour:ends.size>=2, three:threes.size>0, two:twos>0};
+    if(cache.size>60000)cache.clear();cache.set(s,result);return result;
+  }
+  function analyze(board,r,c,p){
+    if(board[r][c])return {score:-1,win:false,fours:0,threes:0,openFour:false};
+    var win=false,fours=0,threes=0,openFour=false,twos=0;
+    for(var d=0;d<4;d++){
+      var s='',dr=DIR[d][0],dc=DIR[d][1];
+      for(var k=-5;k<=5;k++){
+        var rr=r+dr*k,cc=c+dc*k;
+        s+=k===0?'1':!inBoard(rr,cc)?'2':board[rr][cc]===p?'1':board[rr][cc]?'2':'0';
+      }
+      var t=shape(s);win=win||t.five;fours+=t.four;threes+=t.three?1:0;twos+=t.two?1:0;openFour=openFour||t.openFour;
+    }
+    var score=win?WIN:openFour||fours>=2?2000000:fours&&threes?600000:threes>=2?180000:fours?45000:threes?12000:twos?400:0;
+    score+=fours*100+threes*40+twos*8+14-Math.abs(r-7)-Math.abs(c-7);
+    return {score:score,win:win,fours:fours,threes:threes,openFour:openFour};
+  }
+  function candidates(board){
+    var marks=new Set(),occupied=0;
+    for(var r=0;r<N;r++)for(var c=0;c<N;c++)if(board[r][c]){
+      occupied++;
+      for(var dr=-2;dr<=2;dr++)for(var dc=-2;dc<=2;dc++){
+        var rr=r+dr,cc=c+dc;if(inBoard(rr,cc)&&!board[rr][cc])marks.add(rr*N+cc);
+      }
+    }
+    if(!occupied)return [{r:7,c:7}];
+    return Array.from(marks,function(k){return {r:Math.floor(k/N),c:k%N};});
+  }
+  function ranked(board,p){
+    return candidates(board).map(function(m){
+      m.attack=analyze(board,m.r,m.c,p);m.defend=analyze(board,m.r,m.c,3-p);
+      m.value=Math.max(m.attack.score,m.defend.score*1.05)+Math.min(m.attack.score,m.defend.score)*0.15;
+      return m;
+    }).sort(function(a,b){return b.value-a.value||a.r-b.r||a.c-b.c;});
+  }
+  function evaluate(options){
+    var own=0,enemy=0;
+    options.forEach(function(m){own=Math.max(own,m.attack.score);enemy=Math.max(enemy,m.defend.score);});
+    return own-enemy*1.1;
+  }
+  function choose(input,p,level,config){
+    var board=input.map(function(row){return row.slice();}),started=Date.now();config=config||{};
+    var settings=level==='expert'?{depth:10,ms:2700,width:16}:level==='hard'?{depth:4,ms:2200,width:12}:level==='medium'?{depth:2,ms:850,width:14}:{depth:1,ms:120,width:8};
+    var deadline=started+(config.ms||settings.ms),nodes=0,complete=0,timeout={};
+    var table=new Map(),hits=0,killers=[],principal=[],maxPly=0;
+    // Incremental pattern evaluation: a move only changes points on its four lines.
+    var incremental=level==='expert',scores=[null,[],[]],near=new Int16Array(225),hash=0,hash2=0,z1=[],z2=[],rng=748391;
+    function random32(){rng^=rng<<13;rng^=rng>>>17;rng^=rng<<5;return rng|0;}
+    if(incremental){
+      for(var k=0;k<450;k++){z1[k]=random32();z2[k]=random32();}
+      for(var r=0;r<N;r++)for(var c=0;c<N;c++){
+        var stone=board[r][c],index=r*N+c;
+        if(stone){hash^=z1[index*2+stone-1];hash2^=z2[index*2+stone-1];for(var dr=-2;dr<=2;dr++)for(var dc=-2;dc<=2;dc++)if(inBoard(r+dr,c+dc))near[(r+dr)*N+c+dc]++;}
+        else {scores[1][index]=analyze(board,r,c,1);scores[2][index]=analyze(board,r,c,2);}
+      }
+    }
+    function make(m,side){
+      board[m.r][m.c]=side;if(!incremental)return null;
+      var index=m.r*N+m.c,undo=[];hash^=z1[index*2+side-1];hash2^=z2[index*2+side-1];
+      for(var dr=-2;dr<=2;dr++)for(var dc=-2;dc<=2;dc++)if(inBoard(m.r+dr,m.c+dc))near[(m.r+dr)*N+m.c+dc]++;
+      for(var dir of DIR)for(var d=-5;d<=5;d++){
+        if(d===0)continue;var r=m.r+dir[0]*d,c=m.c+dir[1]*d;if(!inBoard(r,c)||board[r][c])continue;
+        var k=r*N+c;undo.push([k,scores[1][k],scores[2][k]]);scores[1][k]=analyze(board,r,c,1);scores[2][k]=analyze(board,r,c,2);
+      }
+      return undo;
+    }
+    function unmake(m,side,undo){
+      board[m.r][m.c]=0;if(!incremental)return;
+      var index=m.r*N+m.c;hash^=z1[index*2+side-1];hash2^=z2[index*2+side-1];
+      for(var dr=-2;dr<=2;dr++)for(var dc=-2;dc<=2;dc++)if(inBoard(m.r+dr,m.c+dc))near[(m.r+dr)*N+m.c+dc]--;
+      undo.forEach(function(x){scores[1][x[0]]=x[1];scores[2][x[0]]=x[2];});
+    }
+    function options(side){
+      var list=[];
+      if(incremental){
+        for(var k=0;k<225;k++){var r=Math.floor(k/N),c=k%N;if(board[r][c]||!near[k])continue;
+          var attack=scores[side][k],defend=scores[3-side][k];
+          list.push({r:r,c:c,attack:attack,defend:defend,value:Math.max(attack.score,defend.score*1.05)+Math.min(attack.score,defend.score)*0.15});
+        }
+        if(!list.length&&!board.some(function(row){return row.some(Boolean);}))list=[{r:7,c:7,attack:analyze(board,7,7,side),defend:analyze(board,7,7,3-side),value:0}];
+        list.sort(function(a,b){return b.value-a.value||a.r-b.r||a.c-b.c;});
+      }else list=ranked(board,side);
+      return list.filter(function(m){return !config.legal||config.legal(board,m.r,m.c,side);});
+    }
+    function check(){if(Date.now()>deadline)throw timeout;}
+    var roots=options(p);
+    function output(m,why){return {r:m.r,c:m.c,depth:complete,nodes:nodes,ms:Date.now()-started,reason:why,cacheHits:hits,targetDepth:settings.depth,maxPly:maxPly,line:principal};}
+    if(!roots.length)return null;
+    var wins=roots.filter(function(m){return m.attack.win;});
+    if(wins.length)return output(wins[0],'win');
+    var blocks=roots.filter(function(m){return m.defend.win;});
+    if(blocks.length)return output(blocks[0],'block-five');
+    if(roots.length===1)return output(roots[0],'opening');
+    if(level==='easy'){
+      var pool=roots.slice(0,Math.min(6,roots.length));
+      return output(pool[Math.floor((config.random||Math.random)()*pool.length)],'casual');
+    }
+    function negamax(side,depth,alpha,beta,ply,extension){
+      nodes++;maxPly=Math.max(maxPly,ply);check();
+      var key,entry,originalAlpha=alpha,requestedDepth=depth;
+      if(level==='expert'){
+        key=hash+':'+hash2+':'+side+':'+ply+':'+extension;
+        entry=table.get(key);
+        if(entry&&entry.depth>=depth){hits++;if(entry.flag==='exact')return entry.value;if(entry.flag==='lower')alpha=Math.max(alpha,entry.value);else beta=Math.min(beta,entry.value);if(alpha>=beta)return entry.value;}
+      }
+      var opts=options(side);if(!opts.length)return 0;
+      check();
+      var win=opts.find(function(m){return m.attack.win;});if(win)return WIN-ply;
+      var forced=opts.filter(function(m){return m.defend.win;});
+      if(forced.length>1)return -WIN+ply+1;
+      var tactical=null;
+      if(depth<=0){
+        if(level==='expert')tactical=opts.filter(function(m){return m.attack.fours||m.attack.threes>=2;});
+        if(!extension||(!forced.length&&(!tactical||!tactical.length)))return evaluate(opts);
+        depth=1;extension--;
+      }
+      var width=level==='expert'?(ply>=4?6:ply>=2?8:12):settings.width;
+      var list=forced.length?forced:(tactical||opts).slice(0,width),best=-Infinity,bestMove=null;
+      if(incremental){var preferred=entry&&entry.move,kill=killers[ply];list.sort(function(a,b){function bonus(m){var k=m.r*N+m.c;return k===preferred?2:k===kill?1:0;}return bonus(b)-bonus(a);});}
+      for(var i=0;i<list.length;i++){
+        var m=list[i],undo=make(m,side);
+        var value;try{
+          if(incremental&&i>0&&Number.isFinite(alpha)){
+            var reduce=depth>=3&&i>=3&&!forced.length&&m.attack.score<12000&&m.defend.score<12000;
+            value=-negamax(3-side,depth-1-(reduce?1:0),-alpha-1,-alpha,ply+1,extension);
+            if(reduce&&value>alpha)value=-negamax(3-side,depth-1,-alpha-1,-alpha,ply+1,extension);
+            if(value>alpha&&value<beta)value=-negamax(3-side,depth-1,-beta,-alpha,ply+1,extension);
+          }
+          else value=-negamax(3-side,depth-1,-beta,-alpha,ply+1,extension);
+        }finally{unmake(m,side,undo);}
+        if(value>best){best=value;bestMove=m.r*N+m.c;}alpha=Math.max(alpha,value);if(alpha>=beta){killers[ply]=m.r*N+m.c;break;}
+      }
+      if(key&&table.size<150000)table.set(key,{value:best,depth:requestedDepth,move:bestMove,flag:best<=originalAlpha?'upper':best>=beta?'lower':'exact'});
+      return best;
+    }
+    var best=roots[0],rootList=roots.slice(0,settings.width);
+    // Defensive candidates are ordered using the opponent's patterns too.
+    // Each completed iteration replaces the last result; interrupted work is discarded.
+    for(var depth=1;depth<=settings.depth;depth++){
+      var iterationBest=best,iterationScore=-Infinity,alpha=-Infinity,finished=true;
+      rootList.sort(function(a,b){return (b===best?1:0)-(a===best?1:0)||b.value-a.value;});
+      try{
+        for(var i=0;i<rootList.length;i++){
+          check();var m=rootList[i],undo=make(m,p);
+          var value;try{value=-negamax(3-p,depth-1,-Infinity,-alpha,1,level==='expert'?4:level==='hard'?4:1);}finally{unmake(m,p,undo);}
+          if(value>iterationScore){iterationScore=value;iterationBest=m;}alpha=Math.max(alpha,value);
+        }
+      }catch(e){if(e!==timeout)throw e;finished=false;}
+      if(!finished)break;best=iterationBest;complete=depth;
+      if(config.onProgress)config.onProgress(output(best,'search'));
+      if(iterationScore>WIN-100)break;
+    }
+    return output(best,'search');
+  }
+  return {analyze:analyze,choose:choose,candidates:candidates,version:'4.2',settings:{easy:1,medium:2,hard:4,expert:10}};
+}());
+
+/* Original examples and summaries based on RIF tutorials; freely played Gomoku. */
+var GomokuReview = (function(){
+  function blank(){return Array.from({length:15},function(){return Array(15).fill(0);});}
+  function position(moves,n){var b=blank();moves.slice(0,n).forEach(function(m){b[m.r][m.c]=m.p;});return b;}
+  function points(b,p,test){return GomokuAI.candidates(b).filter(function(m){return test(GomokuAI.analyze(b,m.r,m.c,p));});}
+  function wins(b,p){return points(b,p,function(x){return x.win;});}
+  function coord(m){return String.fromCharCode(65+m.c)+(15-m.r);}
+  function inspect(moves,i){
+    var m=moves[i],b=position(moves,i),own=wins(b,m.p),foe=wins(b,3-m.p),a=GomokuAI.analyze(b,m.r,m.c,m.p);
+    b[m.r][m.c]=m.p;
+    if(a.win)return {kind:'成五',text:'这手直接成五，结束对局。',severity:0};
+    if(own.length)return {kind:'错过直接获胜',text:'当时可在 '+own.map(coord).join(' / ')+' 直接成五；实际走了 '+coord(m)+'。',severity:3,suggestion:own[0]};
+    if(foe.length&&wins(b,3-m.p).length)return {kind:'漏防成五',text:'对手下一手就能成五；这手未消除该威胁。'+(foe.length>1?'对手原本已有多个成五点，此时单靠堵一处已救不回来。':'当时应优先处理 '+coord(foe[0])+'。'),severity:3,suggestion:foe.length===1?foe[0]:null};
+    var dangerous=points(b,3-m.p,function(x){return x.openFour||x.fours>=2;});
+    if(dangerous.length&&!wins(b,m.p).length)return {kind:'留下活四入口',text:'对手可在 '+dangerous.slice(0,3).map(coord).join(' / ')+' 制造两路成五威胁。这是需要回看的关键点，不一定是唯一失误。',severity:2};
+    var forks=points(b,3-m.p,function(x){return x.threes>=2||(x.fours&&x.threes);});
+    if(forks.length&&!wins(b,m.p).length)return {kind:'留下组合进攻',text:'对手在 '+forks.slice(0,3).map(coord).join(' / ')+' 有双三或四三候选；还需结合先手与反击判断。',severity:1};
+    return {kind:'未检出直接漏招',text:'局部检查没有发现漏防成五或明显组合入口；这不等于这手最优。',severity:0};
+  }
+  // Proves only forcing-four lines. Every defender reply is forced, or two
+  // distinct winning points prove no single blocking move can save the game.
+  function shortLine(input,p,ms,maxPlies){
+    var b=input.map(function(r){return r.slice();}),deadline=Date.now()+(ms||600),expired={};
+    function solve(depth){
+      if(Date.now()>deadline)throw expired;
+      var w=wins(b,p);if(w.length)return [Object.assign({p:p},w[0])];
+      if(depth<3||wins(b,3-p).length)return null;
+      var attacks=points(b,p,function(x){return x.fours>0;});
+      for(var m of attacks){
+        b[m.r][m.c]=p;
+        try{
+          if(wins(b,3-p).length)continue;
+          var next=wins(b,p);
+          if(next.length>=2)return [Object.assign({p:p},m),Object.assign({p:3-p},next[0]),Object.assign({p:p},next[1])];
+          if(next.length===1){var d=next[0];b[d.r][d.c]=3-p;
+            var tail;try{tail=solve(depth-2);}finally{b[d.r][d.c]=0;}
+            if(tail)return [Object.assign({p:p},m),Object.assign({p:3-p},d)].concat(tail);
+          }
+        }finally{b[m.r][m.c]=0;}
+      }return null;
+    }
+    try{for(var depth=1;depth<=(maxPlies||7);depth+=2){var line=solve(depth);if(line)return {line:line,proven:true};}}
+    catch(e){if(e!==expired)throw e;return {line:[],proven:false,timeout:true};}
+    return {line:[],proven:false};
+  }
+  return {blank:blank,position:position,inspect:inspect,shortLine:shortLine,coord:coord};
+}());
+
+/* Gomoku Pro v4: offline training, coach, records and optional Renju-style fouls. */
+var GomokuPro=(function(){
+  'use strict';
+  var N=15,D=[[1,0],[0,1],[1,1],[1,-1]],KEY='gomoku-training-v4';
+  function blank(){return Array.from({length:N},function(){return Array(N).fill(0);});}
+  function lineCount(b,r,c,p,dr,dc){var n=1;for(var s of[-1,1]){var x=r+dr*s,y=c+dc*s;while(x>=0&&y>=0&&x<N&&y<N&&b[x][y]===p){n++;x+=dr*s;y+=dc*s;}}return n;}
+  function forbidden(b,r,c,p,rules){
+    if(rules!=='renju'||p!==1||b[r][c])return null;
+    b[r][c]=p;var over=D.some(function(d){return lineCount(b,r,c,p,d[0],d[1])>5;});b[r][c]=0;
+    if(over)return {type:'长连禁手',text:'黑棋形成六颗或更多连续棋子。'};
+    var a=GomokuAI.analyze(b,r,c,p);
+    if(a.fours>=2)return {type:'四四禁手',text:'黑棋一手同时形成两路四。'};
+    if(a.threes>=2)return {type:'三三禁手',text:'黑棋一手同时形成两路活三。'};
+    return null;
+  }
+  function chooseAI(b,p,level,personality,rules,progress){
+    var started=Date.now(),early=b.reduce(function(n,row){return n+row.filter(Boolean).length;},0)<=10;
+    var budget=early?180:2700,deadline=started+budget;
+    var legal=function(board,r,c,side){return !forbidden(board,r,c,side,rules);};
+    var quick=null;
+    if(level==='expert'){
+      quick=GomokuAI.choose(b,p,'easy',{ms:60,random:function(){return 0;},legal:legal});
+      if(progress&&quick)progress(quick);
+      if(!quick||quick.reason==='win'||quick.reason==='block-five'||quick.reason==='opening')return quick;
+    }
+    if(level==='expert'&&!early&&rules!=='renju'&&typeof GomokuReview!=='undefined'){
+      var proof=GomokuReview.shortLine(b,p,Math.max(1,Math.min(300,deadline-Date.now())),11);
+      if(proof.proven){var first=proof.line[0];return {r:first.r,c:first.c,reason:'proven-forcing-line',line:proof.line,depth:proof.line.length};}
+    }
+    if(level==='expert'&&Date.now()>=deadline)return quick;
+    var budgets={easy:140,medium:900,hard:2400,expert:Math.max(1,deadline-Date.now())},m=GomokuAI.choose(b,p,level,{ms:budgets[level]||900,legal:legal,onProgress:progress});
+    if(!m||!forbidden(b,m.r,m.c,p,rules))return m;
+    var list=GomokuAI.candidates(b).filter(function(x){return !forbidden(b,x.r,x.c,p,rules);}).map(function(x){var a=GomokuAI.analyze(b,x.r,x.c,p),d=GomokuAI.analyze(b,x.r,x.c,3-p),v=a.score+d.score*(personality==='steady'?1.3:personality==='attack'?0.75:1.05);return {r:x.r,c:x.c,v:v};});
+    list.sort(function(a,z){return z.v-a.v;});return list[0]||null;
+  }
+  function describe(a){if(a.win)return '这一步可以直接连成五子。';if(a.openFour)return '这一步形成活四，对方无法同时封住两端。';if(a.fours>=2)return '这一步形成双四，产生两个成五点。';if(a.fours&&a.threes)return '这一步形成四三组合，先制造强制应手再继续进攻。';if(a.threes>=2)return '这一步形成双活三，对方很难同时防守两条线。';if(a.fours)return '这一步形成冲四，迫使对方立即防守。';if(a.threes)return '这一步形成活三，为下一步活四做准备。';return '这一步兼顾中心、连接和后续发展。';}
+  function load(){try{return Object.assign({attempts:0,correct:0,totalMs:0,streak:0,best:0,types:{},games:{easy:[0,0],medium:[0,0],hard:[0,0]},mistakes:{}},JSON.parse(localStorage.getItem(KEY)||'{}'));}catch(e){return {attempts:0,correct:0,totalMs:0,streak:0,best:0,types:{},games:{easy:[0,0],medium:[0,0],hard:[0,0]},mistakes:{}};}}
+  function save(x){try{localStorage.setItem(KEY,JSON.stringify(x));}catch(e){}}
+  return {blank:blank,forbidden:forbidden,chooseAI:chooseAI,describe:describe,load:load,save:save,version:'4.0'};
+}());
+
+onmessage=function(e){var x=e.data;postMessage(GomokuPro.chooseAI(x.board,x.p,x.level,x.style,x.rules,function(m){postMessage({progress:true,move:m});}));};</script><script id="gomoku-puzzles">var GomokuPuzzles=[{"id": "T001", "level": "简单", "type": "补五", "title": "补五：请选择黑棋的关键落点", "black": [[9, 5], [8, 5], [6, 5], [5, 5]], "white": [[10, 5], [12, 1]], "answer": [7, 5], "alts": [[7, 5]], "route": [], "why": "先检查直接成五的空点，能够获胜时不必先防守。", "goal": "win"}, {"id": "T002", "level": "简单", "type": "挡四", "title": "挡四：请选择黑棋的关键落点", "black": [[10, 7], [9, 7], [4, 3]], "white": [[8, 5], [8, 6], [8, 8], [8, 9], [0, 4]], "answer": [8, 7], "alts": [[8, 7]], "route": [], "why": "对手已有冲四，先占住唯一成五点。", "goal": "block"}, {"id": "T003", "level": "简单", "type": "活四", "title": "活四：请选择黑棋的关键落点", "black": [[6, 7], [6, 8], [6, 9], [9, 0]], "white": [[8, 7], [1, 13]], "answer": [6, 6], "alts": [[6, 6], [6, 10]], "route": [], "why": "把活三延伸为活四，产生两个不同的成五点。", "goal": "openFour"}, {"id": "T004", "level": "简单", "type": "补五", "title": "补五：请选择黑棋的关键落点", "black": [[7, 5], [7, 6], [7, 8], [7, 9], [13, 9]], "white": [[7, 4], [4, 13]], "answer": [7, 7], "alts": [[7, 7]], "route": [], "why": "先检查直接成五的空点，能够获胜时不必先防守。", "goal": "win"}, {"id": "T005", "level": "简单", "type": "挡四", "title": "挡四：请选择黑棋的关键落点", "black": [[11, 5], [10, 5], [1, 6]], "white": [[9, 3], [9, 4], [9, 6], [9, 7], [7, 0]], "answer": [9, 5], "alts": [[9, 5]], "route": [], "why": "对手已有冲四，先占住唯一成五点。", "goal": "block"}, {"id": "T006", "level": "简单", "type": "活四", "title": "活四：请选择黑棋的关键落点", "black": [[7, 6], [7, 7], [7, 8]], "white": [[5, 6], [11, 5]], "answer": [7, 5], "alts": [[7, 5], [7, 9]], "route": [], "why": "把活三延伸为活四，产生两个不同的成五点。", "goal": "openFour"}, {"id": "T007", "level": "简单", "type": "补五", "title": "补五：请选择黑棋的关键落点", "black": [[9, 10], [9, 9], [9, 7], [9, 6], [14, 0]], "white": [[9, 11], [2, 14]], "answer": [9, 8], "alts": [[9, 8]], "route": [], "why": "先检查直接成五的空点，能够获胜时不必先防守。", "goal": "win"}, {"id": "T008", "level": "简单", "type": "挡四", "title": "挡四：请选择黑棋的关键落点", "black": [[5, 11], [5, 10], [10, 5]], "white": [[3, 9], [4, 9], [6, 9], [7, 9], [5, 4]], "answer": [5, 9], "alts": [[5, 9]], "route": [], "why": "对手已有冲四，先占住唯一成五点。", "goal": "block"}, {"id": "T009", "level": "简单", "type": "活四", "title": "活四：请选择黑棋的关键落点", "black": [[9, 6], [9, 7], [9, 8], [14, 13]], "white": [[7, 6], [8, 13]], "answer": [9, 5], "alts": [[9, 5], [9, 9]], "route": [], "why": "把活三延伸为活四，产生两个不同的成五点。", "goal": "openFour"}, {"id": "T010", "level": "简单", "type": "补五", "title": "补五：请选择黑棋的关键落点", "black": [[11, 6], [10, 6], [8, 6], [7, 6], [9, 3]], "white": [[12, 6], [9, 0]], "answer": [9, 6], "alts": [[9, 6]], "route": [], "why": "先检查直接成五的空点，能够获胜时不必先防守。", "goal": "win"}, {"id": "T011", "level": "简单", "type": "挡四", "title": "挡四：请选择黑棋的关键落点", "black": [[3, 7], [3, 8], [9, 3]], "white": [[1, 9], [2, 9], [4, 9], [5, 9], [1, 1]], "answer": [3, 9], "alts": [[3, 9]], "route": [], "why": "对手已有冲四，先占住唯一成五点。", "goal": "block"}, {"id": "T012", "level": "简单", "type": "活四", "title": "活四：请选择黑棋的关键落点", "black": [[10, 9], [9, 9], [8, 9], [14, 13]], "white": [[10, 7], [4, 2]], "answer": [7, 9], "alts": [[7, 9], [11, 9]], "route": [], "why": "把活三延伸为活四，产生两个不同的成五点。", "goal": "openFour"}, {"id": "T013", "level": "简单", "type": "补五", "title": "补五：请选择黑棋的关键落点", "black": [[7, 10], [7, 9], [7, 7], [7, 6], [1, 14]], "white": [[7, 11], [14, 5]], "answer": [7, 8], "alts": [[7, 8]], "route": [], "why": "先检查直接成五的空点，能够获胜时不必先防守。", "goal": "win"}, {"id": "T014", "level": "简单", "type": "挡四", "title": "挡四：请选择黑棋的关键落点", "black": [[11, 4], [10, 4], [10, 11]], "white": [[9, 2], [9, 3], [9, 5], [9, 6], [6, 7]], "answer": [9, 4], "alts": [[9, 4]], "route": [], "why": "对手已有冲四，先占住唯一成五点。", "goal": "block"}, {"id": "T015", "level": "简单", "type": "活四", "title": "活四：请选择黑棋的关键落点", "black": [[8, 6], [8, 7], [8, 8], [4, 5]], "white": [[10, 6], [11, 3]], "answer": [8, 5], "alts": [[8, 5], [8, 9]], "route": [], "why": "把活三延伸为活四，产生两个不同的成五点。", "goal": "openFour"}, {"id": "T016", "level": "简单", "type": "补五", "title": "补五：请选择黑棋的关键落点", "black": [[8, 11], [8, 10], [8, 8], [8, 7], [1, 13]], "white": [[8, 12], [3, 8]], "answer": [8, 9], "alts": [[8, 9]], "route": [], "why": "先检查直接成五的空点，能够获胜时不必先防守。", "goal": "win"}, {"id": "T017", "level": "简单", "type": "挡四", "title": "挡四：请选择黑棋的关键落点", "black": [[5, 9], [5, 8], [1, 2]], "white": [[3, 7], [4, 7], [6, 7], [7, 7], [5, 14]], "answer": [5, 7], "alts": [[5, 7]], "route": [], "why": "对手已有冲四，先占住唯一成五点。", "goal": "block"}, {"id": "T018", "level": "简单", "type": "活四", "title": "活四：请选择黑棋的关键落点", "black": [[10, 8], [9, 8], [8, 8], [4, 9]], "white": [[10, 6], [8, 14]], "answer": [7, 8], "alts": [[7, 8], [11, 8]], "route": [], "why": "把活三延伸为活四，产生两个不同的成五点。", "goal": "openFour"}, {"id": "T019", "level": "简单", "type": "补五", "title": "补五：请选择黑棋的关键落点", "black": [[10, 9], [9, 9], [7, 9], [6, 9], [8, 2]], "white": [[11, 9], [2, 5]], "answer": [8, 9], "alts": [[8, 9]], "route": [], "why": "先检查直接成五的空点，能够获胜时不必先防守。", "goal": "win"}, {"id": "T020", "level": "简单", "type": "挡四", "title": "挡四：请选择黑棋的关键落点", "black": [[7, 6], [8, 6]], "white": [[9, 4], [9, 5], [9, 7], [9, 8], [1, 5]], "answer": [9, 6], "alts": [[9, 6]], "route": [], "why": "对手已有冲四，先占住唯一成五点。", "goal": "block"}, {"id": "T021", "level": "简单", "type": "活四", "title": "活四：请选择黑棋的关键落点", "black": [[4, 7], [5, 7], [6, 7]], "white": [[4, 9], [6, 14]], "answer": [3, 7], "alts": [[3, 7], [7, 7]], "route": [], "why": "把活三延伸为活四，产生两个不同的成五点。", "goal": "openFour"}, {"id": "T022", "level": "简单", "type": "补五", "title": "补五：请选择黑棋的关键落点", "black": [[2, 7], [3, 7], [5, 7], [6, 7], [12, 8]], "white": [[1, 7], [12, 2]], "answer": [4, 7], "alts": [[4, 7]], "route": [], "why": "先检查直接成五的空点，能够获胜时不必先防守。", "goal": "win"}, {"id": "T023", "level": "简单", "type": "挡四", "title": "挡四：请选择黑棋的关键落点", "black": [[6, 3], [7, 3]], "white": [[8, 1], [8, 2], [8, 4], [8, 5]], "answer": [8, 3], "alts": [[8, 3]], "route": [], "why": "对手已有冲四，先占住唯一成五点。", "goal": "block"}, {"id": "T024", "level": "简单", "type": "活四", "title": "活四：请选择黑棋的关键落点", "black": [[6, 8], [5, 8], [4, 8], [9, 7]], "white": [[6, 6], [14, 1]], "answer": [3, 8], "alts": [[3, 8], [7, 8]], "route": [], "why": "把活三延伸为活四，产生两个不同的成五点。", "goal": "openFour"}, {"id": "T025", "level": "简单", "type": "补五", "title": "补五：请选择黑棋的关键落点", "black": [[6, 6], [7, 6], [9, 6], [10, 6], [13, 3]], "white": [[5, 6]], "answer": [8, 6], "alts": [[8, 6]], "route": [], "why": "先检查直接成五的空点，能够获胜时不必先防守。", "goal": "win"}, {"id": "T026", "level": "简单", "type": "挡四", "title": "挡四：请选择黑棋的关键落点", "black": [[11, 6], [10, 6], [0, 12]], "white": [[9, 4], [9, 5], [9, 7], [9, 8], [2, 9]], "answer": [9, 6], "alts": [[9, 6]], "route": [], "why": "对手已有冲四，先占住唯一成五点。", "goal": "block"}, {"id": "T027", "level": "简单", "type": "活四", "title": "活四：请选择黑棋的关键落点", "black": [[6, 6], [7, 6], [8, 6], [9, 9]], "white": [[6, 8]], "answer": [5, 6], "alts": [[5, 6], [9, 6]], "route": [], "why": "把活三延伸为活四，产生两个不同的成五点。", "goal": "openFour"}, {"id": "T028", "level": "简单", "type": "补五", "title": "补五：请选择黑棋的关键落点", "black": [[4, 8], [5, 8], [7, 8], [8, 8]], "white": [[3, 8]], "answer": [6, 8], "alts": [[6, 8]], "route": [], "why": "先检查直接成五的空点，能够获胜时不必先防守。", "goal": "win"}, {"id": "T029", "level": "简单", "type": "挡四", "title": "挡四：请选择黑棋的关键落点", "black": [[7, 6], [7, 7], [2, 7]], "white": [[5, 8], [6, 8], [8, 8], [9, 8], [6, 13]], "answer": [7, 8], "alts": [[7, 8]], "route": [], "why": "对手已有冲四，先占住唯一成五点。", "goal": "block"}, {"id": "T030", "level": "简单", "type": "活四", "title": "活四：请选择黑棋的关键落点", "black": [[7, 8], [8, 8], [9, 8], [3, 5]], "white": [[7, 10], [2, 11]], "answer": [6, 8], "alts": [[6, 8], [10, 8]], "route": [], "why": "把活三延伸为活四，产生两个不同的成五点。", "goal": "openFour"}, {"id": "T031", "level": "简单", "type": "补五", "title": "补五：请选择黑棋的关键落点", "black": [[6, 2], [6, 3], [6, 5], [6, 6], [13, 11]], "white": [[6, 1], [4, 12]], "answer": [6, 4], "alts": [[6, 4]], "route": [], "why": "先检查直接成五的空点，能够获胜时不必先防守。", "goal": "win"}, {"id": "T032", "level": "简单", "type": "挡四", "title": "挡四：请选择黑棋的关键落点", "black": [[3, 8], [3, 7]], "white": [[1, 6], [2, 6], [4, 6], [5, 6]], "answer": [3, 6], "alts": [[3, 6]], "route": [], "why": "对手已有冲四，先占住唯一成五点。", "goal": "block"}, {"id": "T033", "level": "简单", "type": "活四", "title": "活四：请选择黑棋的关键落点", "black": [[7, 7], [8, 7], [9, 7], [13, 11]], "white": [[7, 9], [4, 0]], "answer": [6, 7], "alts": [[6, 7], [10, 7]], "route": [], "why": "把活三延伸为活四，产生两个不同的成五点。", "goal": "openFour"}, {"id": "T034", "level": "简单", "type": "补五", "title": "补五：请选择黑棋的关键落点", "black": [[8, 8], [8, 7], [8, 5], [8, 4], [0, 10]], "white": [[8, 9], [4, 6]], "answer": [8, 6], "alts": [[8, 6]], "route": [], "why": "先检查直接成五的空点，能够获胜时不必先防守。", "goal": "win"}, {"id": "T035", "level": "简单", "type": "挡四", "title": "挡四：请选择黑棋的关键落点", "black": [[11, 4], [10, 4]], "white": [[9, 2], [9, 3], [9, 5], [9, 6], [1, 3]], "answer": [9, 4], "alts": [[9, 4]], "route": [], "why": "对手已有冲四，先占住唯一成五点。", "goal": "block"}, {"id": "T036", "level": "简单", "type": "活四", "title": "活四：请选择黑棋的关键落点", "black": [[9, 9], [8, 9], [7, 9], [10, 1]], "white": [[9, 7], [14, 5]], "answer": [6, 9], "alts": [[6, 9], [10, 9]], "route": [], "why": "把活三延伸为活四，产生两个不同的成五点。", "goal": "openFour"}, {"id": "T037", "level": "简单", "type": "补五", "title": "补五：请选择黑棋的关键落点", "black": [[4, 6], [5, 6], [7, 6], [8, 6], [2, 1]], "white": [[3, 6]], "answer": [6, 6], "alts": [[6, 6]], "route": [], "why": "先检查直接成五的空点，能够获胜时不必先防守。", "goal": "win"}, {"id": "T038", "level": "简单", "type": "挡四", "title": "挡四：请选择黑棋的关键落点", "black": [[4, 7], [4, 6]], "white": [[2, 5], [3, 5], [5, 5], [6, 5], [1, 9]], "answer": [4, 5], "alts": [[4, 5]], "route": [], "why": "对手已有冲四，先占住唯一成五点。", "goal": "block"}, {"id": "T039", "level": "简单", "type": "活四", "title": "活四：请选择黑棋的关键落点", "black": [[6, 8], [6, 9], [6, 10], [2, 4]], "white": [[8, 8]], "answer": [6, 7], "alts": [[6, 7], [6, 11]], "route": [], "why": "把活三延伸为活四，产生两个不同的成五点。", "goal": "openFour"}, {"id": "T040", "level": "简单", "type": "补五", "title": "补五：请选择黑棋的关键落点", "black": [[12, 8], [11, 8], [9, 8], [8, 8], [1, 14]], "white": [[13, 8], [8, 12]], "answer": [10, 8], "alts": [[10, 8]], "route": [], "why": "先检查直接成五的空点，能够获胜时不必先防守。", "goal": "win"}, {"id": "T041", "level": "简单", "type": "挡四", "title": "挡四：请选择黑棋的关键落点", "black": [[8, 6], [8, 7], [14, 13]], "white": [[10, 8], [9, 8], [7, 8], [6, 8]], "answer": [8, 8], "alts": [[8, 8]], "route": [], "why": "对手已有冲四，先占住唯一成五点。", "goal": "block"}, {"id": "T042", "level": "简单", "type": "活四", "title": "活四：请选择黑棋的关键落点", "black": [[9, 7], [9, 6], [9, 5], [0, 0]], "white": [[11, 7], [6, 0]], "answer": [9, 4], "alts": [[9, 4], [9, 8]], "route": [], "why": "把活三延伸为活四，产生两个不同的成五点。", "goal": "openFour"}, {"id": "T043", "level": "简单", "type": "补五", "title": "补五：请选择黑棋的关键落点", "black": [[6, 6], [6, 7], [6, 9], [6, 10], [2, 8]], "white": [[6, 5], [10, 12]], "answer": [6, 8], "alts": [[6, 8]], "route": [], "why": "先检查直接成五的空点，能够获胜时不必先防守。", "goal": "win"}, {"id": "T044", "level": "简单", "type": "挡四", "title": "挡四：请选择黑棋的关键落点", "black": [[8, 9], [8, 8], [12, 13]], "white": [[10, 7], [9, 7], [7, 7], [6, 7], [1, 4]], "answer": [8, 7], "alts": [[8, 7]], "route": [], "why": "对手已有冲四，先占住唯一成五点。", "goal": "block"}, {"id": "T045", "level": "简单", "type": "活四", "title": "活四：请选择黑棋的关键落点", "black": [[4, 7], [5, 7], [6, 7], [1, 12]], "white": [[4, 5], [5, 13]], "answer": [3, 7], "alts": [[3, 7], [7, 7]], "route": [], "why": "把活三延伸为活四，产生两个不同的成五点。", "goal": "openFour"}, {"id": "T046", "level": "简单", "type": "补五", "title": "补五：请选择黑棋的关键落点", "black": [[8, 7], [7, 7], [5, 7], [4, 7], [8, 10]], "white": [[9, 7], [11, 1]], "answer": [6, 7], "alts": [[6, 7]], "route": [], "why": "先检查直接成五的空点，能够获胜时不必先防守。", "goal": "win"}, {"id": "T047", "level": "简单", "type": "挡四", "title": "挡四：请选择黑棋的关键落点", "black": [[3, 8], [4, 8], [1, 2]], "white": [[5, 10], [5, 9], [5, 7], [5, 6], [12, 12]], "answer": [5, 8], "alts": [[5, 8]], "route": [], "why": "对手已有冲四，先占住唯一成五点。", "goal": "block"}, {"id": "T048", "level": "简单", "type": "活四", "title": "活四：请选择黑棋的关键落点", "black": [[5, 7], [5, 6], [5, 5], [10, 5]], "white": [[3, 7]], "answer": [5, 8], "alts": [[5, 8], [5, 4]], "route": [], "why": "把活三延伸为活四，产生两个不同的成五点。", "goal": "openFour"}, {"id": "T049", "level": "简单", "type": "补五", "title": "补五：请选择黑棋的关键落点", "black": [[9, 5], [9, 6], [9, 8], [9, 9]], "white": [[9, 4], [5, 14]], "answer": [9, 7], "alts": [[9, 7]], "route": [], "why": "先检查直接成五的空点，能够获胜时不必先防守。", "goal": "win"}, {"id": "T050", "level": "简单", "type": "挡四", "title": "挡四：请选择黑棋的关键落点", "black": [[5, 4], [6, 4], [10, 10]], "white": [[7, 2], [7, 3], [7, 5], [7, 6]], "answer": [7, 4], "alts": [[7, 4]], "route": [], "why": "对手已有冲四，先占住唯一成五点。", "goal": "block"}, {"id": "T051", "level": "简单", "type": "活四", "title": "活四：请选择黑棋的关键落点", "black": [[8, 9], [7, 9], [6, 9], [2, 9]], "white": [[8, 7], [1, 4]], "answer": [5, 9], "alts": [[5, 9], [9, 9]], "route": [], "why": "把活三延伸为活四，产生两个不同的成五点。", "goal": "openFour"}, {"id": "T052", "level": "简单", "type": "补五", "title": "补五：请选择黑棋的关键落点", "black": [[10, 7], [9, 7], [7, 7], [6, 7], [14, 13]], "white": [[11, 7], [0, 11]], "answer": [8, 7], "alts": [[8, 7]], "route": [], "why": "先检查直接成五的空点，能够获胜时不必先防守。", "goal": "win"}, {"id": "T053", "level": "简单", "type": "挡四", "title": "挡四：请选择黑棋的关键落点", "black": [[5, 9], [6, 9], [14, 5]], "white": [[7, 11], [7, 10], [7, 8], [7, 7]], "answer": [7, 9], "alts": [[7, 9]], "route": [], "why": "对手已有冲四，先占住唯一成五点。", "goal": "block"}, {"id": "T054", "level": "简单", "type": "活四", "title": "活四：请选择黑棋的关键落点", "black": [[5, 8], [6, 8], [7, 8], [13, 3]], "white": [[5, 10], [2, 2]], "answer": [4, 8], "alts": [[4, 8], [8, 8]], "route": [], "why": "把活三延伸为活四，产生两个不同的成五点。", "goal": "openFour"}, {"id": "T055", "level": "简单", "type": "补五", "title": "补五：请选择黑棋的关键落点", "black": [[3, 5], [4, 5], [6, 5], [7, 5], [10, 14]], "white": [[2, 5], [10, 10]], "answer": [5, 5], "alts": [[5, 5]], "route": [], "why": "先检查直接成五的空点，能够获胜时不必先防守。", "goal": "win"}, {"id": "T056", "level": "简单", "type": "挡四", "title": "挡四：请选择黑棋的关键落点", "black": [[4, 4], [4, 5], [2, 10]], "white": [[2, 6], [3, 6], [5, 6], [6, 6], [14, 10]], "answer": [4, 6], "alts": [[4, 6]], "route": [], "why": "对手已有冲四，先占住唯一成五点。", "goal": "block"}, {"id": "T057", "level": "简单", "type": "活四", "title": "活四：请选择黑棋的关键落点", "black": [[6, 7], [5, 7], [4, 7], [0, 8]], "white": [[6, 5], [1, 3]], "answer": [3, 7], "alts": [[3, 7], [7, 7]], "route": [], "why": "把活三延伸为活四，产生两个不同的成五点。", "goal": "openFour"}, {"id": "T058", "level": "简单", "type": "补五", "title": "补五：请选择黑棋的关键落点", "black": [[3, 5], [4, 5], [6, 5], [7, 5], [6, 14]], "white": [[2, 5], [4, 0]], "answer": [5, 5], "alts": [[5, 5]], "route": [], "why": "先检查直接成五的空点，能够获胜时不必先防守。", "goal": "win"}, {"id": "T059", "level": "简单", "type": "挡四", "title": "挡四：请选择黑棋的关键落点", "black": [[11, 7], [10, 7], [6, 11]], "white": [[9, 5], [9, 6], [9, 8], [9, 9], [2, 2]], "answer": [9, 7], "alts": [[9, 7]], "route": [], "why": "对手已有冲四，先占住唯一成五点。", "goal": "block"}, {"id": "T060", "level": "简单", "type": "活四", "title": "活四：请选择黑棋的关键落点", "black": [[6, 6], [5, 6], [4, 6], [11, 8]], "white": [[6, 8]], "answer": [3, 6], "alts": [[3, 6], [7, 6]], "route": [], "why": "把活三延伸为活四，产生两个不同的成五点。", "goal": "openFour"}, {"id": "T061", "level": "中等", "type": "跳活三", "title": "跳活三：请选择黑棋的关键落点", "black": [[5, 6], [6, 6], [8, 6], [11, 2], [1, 7], [3, 12]], "white": [[6, 8], [14, 10]], "answer": [7, 6], "alts": [[7, 6]], "route": [], "why": "填补跳活三的空隙，形成两端开放的四；对方只能挡住一端。", "goal": "openFour"}, {"id": "T062", "level": "中等", "type": "双活三", "title": "双活三：请选择黑棋的关键落点", "black": [[7, 6], [7, 4], [6, 5], [8, 5], [14, 5]], "white": [[5, 7]], "answer": [7, 5], "alts": [[7, 5]], "route": [], "why": "一手连接两条活三；先核对对手没有直接成五的反击。此题采用普通无禁手规则。", "goal": "fork"}, {"id": "T063", "level": "中等", "type": "预防双三", "title": "预防双三：请选择黑棋的关键落点", "black": [[4, 9], [14, 2], [12, 14]], "white": [[6, 8], [6, 6], [5, 7], [7, 7], [13, 9]], "answer": [6, 7], "alts": [[6, 7]], "route": [], "why": "提前占住对手双活三的交叉点，避免两条攻击线同时形成。", "goal": "defendFork"}, {"id": "T064", "level": "中等", "type": "四三", "title": "四三：请选择黑棋的关键落点", "black": [[5, 10], [5, 9], [5, 8], [6, 7], [4, 7], [12, 0], [7, 14]], "white": [[5, 11], [9, 2], [10, 8]], "answer": [5, 7], "alts": [[5, 7]], "route": [], "why": "横向冲四迫使对手防守，再沿另一条活三进攻。", "goal": "fourThree"}, {"id": "T065", "level": "中等", "type": "跳活三", "title": "跳活三：请选择黑棋的关键落点", "black": [[5, 11], [5, 10], [5, 8], [12, 2], [0, 1]], "white": [[7, 10], [8, 0], [1, 14]], "answer": [5, 9], "alts": [[5, 9]], "route": [], "why": "填补跳活三的空隙，形成两端开放的四；对方只能挡住一端。", "goal": "openFour"}, {"id": "T066", "level": "中等", "type": "双活三", "title": "双活三：请选择黑棋的关键落点", "black": [[7, 6], [7, 4], [6, 5], [8, 5], [14, 9], [13, 13], [9, 11]], "white": [[5, 7], [12, 4], [7, 14]], "answer": [7, 5], "alts": [[7, 5]], "route": [], "why": "一手连接两条活三；先核对对手没有直接成五的反击。此题采用普通无禁手规则。", "goal": "fork"}, {"id": "T067", "level": "中等", "type": "预防双三", "title": "预防双三：请选择黑棋的关键落点", "black": [[6, 7], [3, 4], [3, 9]], "white": [[7, 5], [9, 5], [8, 6], [8, 4], [12, 0], [5, 12]], "answer": [8, 5], "alts": [[8, 5]], "route": [], "why": "提前占住对手双活三的交叉点，避免两条攻击线同时形成。", "goal": "defendFork"}, {"id": "T068", "level": "中等", "type": "四三", "title": "四三：请选择黑棋的关键落点", "black": [[8, 7], [7, 7], [6, 7], [5, 8], [5, 6], [14, 9], [5, 11]], "white": [[9, 7], [10, 13], [2, 11]], "answer": [5, 7], "alts": [[5, 7]], "route": [], "why": "横向冲四迫使对手防守，再沿另一条活三进攻。", "goal": "fourThree"}, {"id": "T069", "level": "中等", "type": "跳活三", "title": "跳活三：请选择黑棋的关键落点", "black": [[8, 10], [8, 9], [8, 7], [0, 10], [13, 11]], "white": [[6, 9], [9, 3], [5, 14]], "answer": [8, 8], "alts": [[8, 8]], "route": [], "why": "填补跳活三的空隙，形成两端开放的四；对方只能挡住一端。", "goal": "openFour"}, {"id": "T070", "level": "中等", "type": "双活三", "title": "双活三：请选择黑棋的关键落点", "black": [[7, 7], [9, 7], [8, 8], [8, 6], [2, 2], [2, 8]], "white": [[6, 9], [11, 14]], "answer": [8, 7], "alts": [[8, 7]], "route": [], "why": "一手连接两条活三；先核对对手没有直接成五的反击。此题采用普通无禁手规则。", "goal": "fork"}, {"id": "T071", "level": "中等", "type": "预防双三", "title": "预防双三：请选择黑棋的关键落点", "black": [[10, 11], [4, 4], [0, 3]], "white": [[9, 9], [7, 9], [8, 10], [8, 8], [3, 12], [14, 11]], "answer": [8, 9], "alts": [[8, 9]], "route": [], "why": "提前占住对手双活三的交叉点，避免两条攻击线同时形成。", "goal": "defendFork"}, {"id": "T072", "level": "中等", "type": "四三", "title": "四三：请选择黑棋的关键落点", "black": [[12, 7], [11, 7], [10, 7], [9, 8], [9, 6], [0, 12]], "white": [[13, 7], [12, 1], [11, 13]], "answer": [9, 7], "alts": [[9, 7]], "route": [], "why": "横向冲四迫使对手防守，再沿另一条活三进攻。", "goal": "fourThree"}, {"id": "T073", "level": "中等", "type": "跳活三", "title": "跳活三：请选择黑棋的关键落点", "black": [[9, 10], [9, 9], [9, 7], [4, 12], [12, 7]], "white": [[7, 9], [0, 9]], "answer": [9, 8], "alts": [[9, 8]], "route": [], "why": "填补跳活三的空隙，形成两端开放的四；对方只能挡住一端。", "goal": "openFour"}, {"id": "T074", "level": "中等", "type": "双活三", "title": "双活三：请选择黑棋的关键落点", "black": [[7, 9], [7, 7], [8, 8], [6, 8], [1, 5], [12, 8]], "white": [[9, 10], [1, 11], [7, 4]], "answer": [7, 8], "alts": [[7, 8]], "route": [], "why": "一手连接两条活三；先核对对手没有直接成五的反击。此题采用普通无禁手规则。", "goal": "fork"}, {"id": "T075", "level": "中等", "type": "预防双三", "title": "预防双三：请选择黑棋的关键落点", "black": [[8, 10], [10, 14], [6, 4]], "white": [[7, 8], [5, 8], [6, 9], [6, 7], [6, 0]], "answer": [6, 8], "alts": [[6, 8]], "route": [], "why": "提前占住对手双活三的交叉点，避免两条攻击线同时形成。", "goal": "defendFork"}, {"id": "T076", "level": "中等", "type": "四三", "title": "四三：请选择黑棋的关键落点", "black": [[2, 6], [3, 6], [4, 6], [5, 7], [5, 5], [3, 12], [14, 12], [5, 2]], "white": [[1, 6], [9, 0]], "answer": [5, 6], "alts": [[5, 6]], "route": [], "why": "横向冲四迫使对手防守，再沿另一条活三进攻。", "goal": "fourThree"}, {"id": "T077", "level": "中等", "type": "跳活三", "title": "跳活三：请选择黑棋的关键落点", "black": [[8, 6], [7, 6], [5, 6], [3, 11], [3, 14], [13, 5]], "white": [[7, 8], [7, 12], [11, 8]], "answer": [6, 6], "alts": [[6, 6]], "route": [], "why": "填补跳活三的空隙，形成两端开放的四；对方只能挡住一端。", "goal": "openFour"}, {"id": "T078", "level": "中等", "type": "双活三", "title": "双活三：请选择黑棋的关键落点", "black": [[5, 6], [7, 6], [6, 5], [6, 7], [9, 3], [2, 10], [14, 4]], "white": [[4, 4], [7, 14]], "answer": [6, 6], "alts": [[6, 6]], "route": [], "why": "一手连接两条活三；先核对对手没有直接成五的反击。此题采用普通无禁手规则。", "goal": "fork"}, {"id": "T079", "level": "中等", "type": "预防双三", "title": "预防双三：请选择黑棋的关键落点", "black": [[7, 7], [4, 9], [4, 3]], "white": [[8, 9], [10, 9], [9, 8], [9, 10], [0, 1], [11, 4], [13, 10]], "answer": [9, 9], "alts": [[9, 9]], "route": [], "why": "提前占住对手双活三的交叉点，避免两条攻击线同时形成。", "goal": "defendFork"}, {"id": "T080", "level": "中等", "type": "四三", "title": "四三：请选择黑棋的关键落点", "black": [[12, 9], [11, 9], [10, 9], [9, 10], [9, 8], [2, 12], [3, 8]], "white": [[13, 9], [14, 12]], "answer": [9, 9], "alts": [[9, 9]], "route": [], "why": "横向冲四迫使对手防守，再沿另一条活三进攻。", "goal": "fourThree"}, {"id": "T081", "level": "中等", "type": "跳活三", "title": "跳活三：请选择黑棋的关键落点", "black": [[7, 5], [6, 5], [4, 5], [1, 13], [10, 4], [6, 14]], "white": [[6, 3], [13, 6], [8, 11]], "answer": [5, 5], "alts": [[5, 5]], "route": [], "why": "填补跳活三的空隙，形成两端开放的四；对方只能挡住一端。", "goal": "openFour"}, {"id": "T082", "level": "中等", "type": "双活三", "title": "双活三：请选择黑棋的关键落点", "black": [[5, 7], [5, 5], [6, 6], [4, 6], [8, 12], [8, 0]], "white": [[7, 8], [3, 2], [14, 11]], "answer": [5, 6], "alts": [[5, 6]], "route": [], "why": "一手连接两条活三；先核对对手没有直接成五的反击。此题采用普通无禁手规则。", "goal": "fork"}, {"id": "T083", "level": "中等", "type": "预防双三", "title": "预防双三：请选择黑棋的关键落点", "black": [[7, 4], [4, 4], [7, 14]], "white": [[8, 6], [10, 6], [9, 5], [9, 7], [2, 11]], "answer": [9, 6], "alts": [[9, 6]], "route": [], "why": "提前占住对手双活三的交叉点，避免两条攻击线同时形成。", "goal": "defendFork"}, {"id": "T084", "level": "中等", "type": "四三", "title": "四三：请选择黑棋的关键落点", "black": [[10, 9], [9, 9], [8, 9], [7, 8], [7, 10], [0, 2], [3, 8]], "white": [[11, 9], [14, 11], [10, 2], [11, 6]], "answer": [7, 9], "alts": [[7, 9]], "route": [], "why": "横向冲四迫使对手防守，再沿另一条活三进攻。", "goal": "fourThree"}, {"id": "T085", "level": "中等", "type": "跳活三", "title": "跳活三：请选择黑棋的关键落点", "black": [[5, 8], [5, 7], [5, 5], [13, 5], [4, 13]], "white": [[7, 7]], "answer": [5, 6], "alts": [[5, 6]], "route": [], "why": "填补跳活三的空隙，形成两端开放的四；对方只能挡住一端。", "goal": "openFour"}, {"id": "T086", "level": "中等", "type": "双活三", "title": "双活三：请选择黑棋的关键落点", "black": [[4, 6], [6, 6], [5, 5], [5, 7], [13, 9], [10, 12]], "white": [[3, 4]], "answer": [5, 6], "alts": [[5, 6]], "route": [], "why": "一手连接两条活三；先核对对手没有直接成五的反击。此题采用普通无禁手规则。", "goal": "fork"}, {"id": "T087", "level": "中等", "type": "预防双三", "title": "预防双三：请选择黑棋的关键落点", "black": [[6, 4], [3, 10]], "white": [[8, 5], [8, 7], [7, 6], [9, 6], [11, 0], [8, 12], [2, 5]], "answer": [8, 6], "alts": [[8, 6]], "route": [], "why": "提前占住对手双活三的交叉点，避免两条攻击线同时形成。", "goal": "defendFork"}, {"id": "T088", "level": "中等", "type": "四三", "title": "四三：请选择黑棋的关键落点", "black": [[10, 5], [9, 5], [8, 5], [7, 6], [7, 4], [1, 7], [4, 14]], "white": [[11, 5], [10, 12], [14, 4]], "answer": [7, 5], "alts": [[7, 5]], "route": [], "why": "横向冲四迫使对手防守，再沿另一条活三进攻。", "goal": "fourThree"}, {"id": "T089", "level": "中等", "type": "跳活三", "title": "跳活三：请选择黑棋的关键落点", "black": [[8, 4], [8, 5], [8, 7], [3, 3], [1, 0]], "white": [[6, 5], [1, 11], [2, 7]], "answer": [8, 6], "alts": [[8, 6]], "route": [], "why": "填补跳活三的空隙，形成两端开放的四；对方只能挡住一端。", "goal": "openFour"}, {"id": "T090", "level": "中等", "type": "双活三", "title": "双活三：请选择黑棋的关键落点", "black": [[7, 4], [7, 6], [8, 5], [6, 5], [0, 1], [4, 0]], "white": [[9, 3]], "answer": [7, 5], "alts": [[7, 5]], "route": [], "why": "一手连接两条活三；先核对对手没有直接成五的反击。此题采用普通无禁手规则。", "goal": "fork"}, {"id": "T091", "level": "中等", "type": "预防双三", "title": "预防双三：请选择黑棋的关键落点", "black": [[3, 7], [8, 8], [14, 14]], "white": [[5, 6], [5, 4], [4, 5], [6, 5], [14, 2], [11, 2]], "answer": [5, 5], "alts": [[5, 5]], "route": [], "why": "提前占住对手双活三的交叉点，避免两条攻击线同时形成。", "goal": "defendFork"}, {"id": "T092", "level": "中等", "type": "四三", "title": "四三：请选择黑棋的关键落点", "black": [[5, 2], [5, 3], [5, 4], [4, 5], [6, 5], [14, 7], [10, 3]], "white": [[5, 1], [5, 11], [5, 8]], "answer": [5, 5], "alts": [[5, 5]], "route": [], "why": "横向冲四迫使对手防守，再沿另一条活三进攻。", "goal": "fourThree"}, {"id": "T093", "level": "中等", "type": "跳活三", "title": "跳活三：请选择黑棋的关键落点", "black": [[6, 9], [7, 9], [9, 9], [13, 5], [12, 9], [0, 14]], "white": [[7, 11], [0, 2], [5, 1]], "answer": [8, 9], "alts": [[8, 9]], "route": [], "why": "填补跳活三的空隙，形成两端开放的四；对方只能挡住一端。", "goal": "openFour"}, {"id": "T094", "level": "中等", "type": "双活三", "title": "双活三：请选择黑棋的关键落点", "black": [[8, 5], [6, 5], [7, 6], [7, 4], [14, 4], [2, 6], [3, 11]], "white": [[9, 7], [11, 3], [1, 1]], "answer": [7, 5], "alts": [[7, 5]], "route": [], "why": "一手连接两条活三；先核对对手没有直接成五的反击。此题采用普通无禁手规则。", "goal": "fork"}, {"id": "T095", "level": "中等", "type": "预防双三", "title": "预防双三：请选择黑棋的关键落点", "black": [[10, 8], [14, 13]], "white": [[8, 7], [8, 5], [9, 6], [7, 6], [2, 3], [4, 7]], "answer": [8, 6], "alts": [[8, 6]], "route": [], "why": "提前占住对手双活三的交叉点，避免两条攻击线同时形成。", "goal": "defendFork"}, {"id": "T096", "level": "中等", "type": "四三", "title": "四三：请选择黑棋的关键落点", "black": [[6, 11], [6, 10], [6, 9], [7, 8], [5, 8], [11, 7]], "white": [[6, 12], [0, 3], [5, 3]], "answer": [6, 8], "alts": [[6, 8]], "route": [], "why": "横向冲四迫使对手防守，再沿另一条活三进攻。", "goal": "fourThree"}, {"id": "T097", "level": "中等", "type": "跳活三", "title": "跳活三：请选择黑棋的关键落点", "black": [[8, 7], [8, 8], [8, 10], [12, 3], [8, 1]], "white": [[6, 8], [5, 5], [14, 14]], "answer": [8, 9], "alts": [[8, 9]], "route": [], "why": "填补跳活三的空隙，形成两端开放的四；对方只能挡住一端。", "goal": "openFour"}, {"id": "T098", "level": "中等", "type": "双活三", "title": "双活三：请选择黑棋的关键落点", "black": [[8, 7], [8, 5], [7, 6], [9, 6], [1, 0], [12, 11]], "white": [[6, 8], [2, 11], [0, 8]], "answer": [8, 6], "alts": [[8, 6]], "route": [], "why": "一手连接两条活三；先核对对手没有直接成五的反击。此题采用普通无禁手规则。", "goal": "fork"}, {"id": "T099", "level": "中等", "type": "预防双三", "title": "预防双三：请选择黑棋的关键落点", "black": [[9, 11], [5, 0], [14, 8], [10, 6]], "white": [[7, 10], [7, 8], [8, 9], [6, 9], [7, 3], [1, 9]], "answer": [7, 9], "alts": [[7, 9]], "route": [], "why": "提前占住对手双活三的交叉点，避免两条攻击线同时形成。", "goal": "defendFork"}, {"id": "T100", "level": "中等", "type": "四三", "title": "四三：请选择黑棋的关键落点", "black": [[8, 4], [8, 5], [8, 6], [7, 7], [9, 7], [12, 2], [3, 14], [2, 10]], "white": [[8, 3], [3, 6], [13, 5]], "answer": [8, 7], "alts": [[8, 7]], "route": [], "why": "横向冲四迫使对手防守，再沿另一条活三进攻。", "goal": "fourThree"}, {"id": "T101", "level": "中等", "type": "跳活三", "title": "跳活三：请选择黑棋的关键落点", "black": [[5, 3], [5, 4], [5, 6], [12, 1]], "white": [[7, 4], [0, 14], [1, 4], [12, 13]], "answer": [5, 5], "alts": [[5, 5]], "route": [], "why": "填补跳活三的空隙，形成两端开放的四；对方只能挡住一端。", "goal": "openFour"}, {"id": "T102", "level": "中等", "type": "双活三", "title": "双活三：请选择黑棋的关键落点", "black": [[8, 6], [6, 6], [7, 7], [7, 5], [5, 2]], "white": [[9, 8], [14, 10], [1, 11], [12, 2]], "answer": [7, 6], "alts": [[7, 6]], "route": [], "why": "一手连接两条活三；先核对对手没有直接成五的反击。此题采用普通无禁手规则。", "goal": "fork"}, {"id": "T103", "level": "中等", "type": "预防双三", "title": "预防双三：请选择黑棋的关键落点", "black": [[3, 6], [9, 2], [14, 11]], "white": [[4, 8], [6, 8], [5, 7], [5, 9], [12, 0], [11, 12], [14, 4]], "answer": [5, 8], "alts": [[5, 8]], "route": [], "why": "提前占住对手双活三的交叉点，避免两条攻击线同时形成。", "goal": "defendFork"}, {"id": "T104", "level": "中等", "type": "四三", "title": "四三：请选择黑棋的关键落点", "black": [[6, 6], [7, 6], [8, 6], [9, 7], [9, 5], [4, 1], [14, 4], [2, 13]], "white": [[5, 6], [9, 11], [12, 8]], "answer": [9, 6], "alts": [[9, 6]], "route": [], "why": "横向冲四迫使对手防守，再沿另一条活三进攻。", "goal": "fourThree"}, {"id": "T105", "level": "中等", "type": "跳活三", "title": "跳活三：请选择黑棋的关键落点", "black": [[8, 5], [8, 6], [8, 8], [6, 11], [0, 7], [6, 14]], "white": [[10, 6], [14, 12], [2, 2], [9, 1]], "answer": [8, 7], "alts": [[8, 7]], "route": [], "why": "填补跳活三的空隙，形成两端开放的四；对方只能挡住一端。", "goal": "openFour"}, {"id": "T106", "level": "中等", "type": "双活三", "title": "双活三：请选择黑棋的关键落点", "black": [[9, 6], [9, 4], [10, 5], [8, 5], [3, 4]], "white": [[11, 7], [13, 14], [1, 12]], "answer": [9, 5], "alts": [[9, 5]], "route": [], "why": "一手连接两条活三；先核对对手没有直接成五的反击。此题采用普通无禁手规则。", "goal": "fork"}, {"id": "T107", "level": "中等", "type": "预防双三", "title": "预防双三：请选择黑棋的关键落点", "black": [[6, 10], [14, 9], [0, 0]], "white": [[7, 8], [9, 8], [8, 9], [8, 7], [0, 14]], "answer": [8, 8], "alts": [[8, 8]], "route": [], "why": "提前占住对手双活三的交叉点，避免两条攻击线同时形成。", "goal": "defendFork"}, {"id": "T108", "level": "中等", "type": "四三", "title": "四三：请选择黑棋的关键落点", "black": [[5, 2], [5, 3], [5, 4], [4, 5], [6, 5], [2, 11], [6, 11]], "white": [[5, 1]], "answer": [5, 5], "alts": [[5, 5]], "route": [], "why": "横向冲四迫使对手防守，再沿另一条活三进攻。", "goal": "fourThree"}, {"id": "T109", "level": "中等", "type": "跳活三", "title": "跳活三：请选择黑棋的关键落点", "black": [[5, 11], [5, 10], [5, 8], [3, 14], [13, 5]], "white": [[3, 10], [6, 3], [2, 2]], "answer": [5, 9], "alts": [[5, 9]], "route": [], "why": "填补跳活三的空隙，形成两端开放的四；对方只能挡住一端。", "goal": "openFour"}, {"id": "T110", "level": "中等", "type": "双活三", "title": "双活三：请选择黑棋的关键落点", "black": [[10, 5], [8, 5], [9, 6], [9, 4], [6, 2], [0, 1]], "white": [[11, 7], [1, 9], [12, 11]], "answer": [9, 5], "alts": [[9, 5]], "route": [], "why": "一手连接两条活三；先核对对手没有直接成五的反击。此题采用普通无禁手规则。", "goal": "fork"}, {"id": "T111", "level": "中等", "type": "预防双三", "title": "预防双三：请选择黑棋的关键落点", "black": [[8, 7], [0, 10], [12, 7], [11, 1]], "white": [[7, 5], [5, 5], [6, 6], [6, 4], [5, 14]], "answer": [6, 5], "alts": [[6, 5]], "route": [], "why": "提前占住对手双活三的交叉点，避免两条攻击线同时形成。", "goal": "defendFork"}, {"id": "T112", "level": "中等", "type": "四三", "title": "四三：请选择黑棋的关键落点", "black": [[9, 9], [9, 8], [9, 7], [8, 6], [10, 6], [6, 9], [10, 1]], "white": [[9, 10], [14, 1]], "answer": [9, 6], "alts": [[9, 6]], "route": [], "why": "横向冲四迫使对手防守，再沿另一条活三进攻。", "goal": "fourThree"}, {"id": "T113", "level": "中等", "type": "跳活三", "title": "跳活三：请选择黑棋的关键落点", "black": [[3, 5], [4, 5], [6, 5], [1, 8], [4, 1]], "white": [[4, 7], [10, 13], [10, 1]], "answer": [5, 5], "alts": [[5, 5]], "route": [], "why": "填补跳活三的空隙，形成两端开放的四；对方只能挡住一端。", "goal": "openFour"}, {"id": "T114", "level": "中等", "type": "双活三", "title": "双活三：请选择黑棋的关键落点", "black": [[9, 9], [9, 7], [10, 8], [8, 8], [1, 13], [3, 7]], "white": [[11, 10], [14, 5], [0, 8]], "answer": [9, 8], "alts": [[9, 8]], "route": [], "why": "一手连接两条活三；先核对对手没有直接成五的反击。此题采用普通无禁手规则。", "goal": "fork"}, {"id": "T115", "level": "中等", "type": "预防双三", "title": "预防双三：请选择黑棋的关键落点", "black": [[7, 9], [1, 14], [11, 3]], "white": [[8, 7], [10, 7], [9, 8], [9, 6], [8, 1]], "answer": [9, 7], "alts": [[9, 7]], "route": [], "why": "提前占住对手双活三的交叉点，避免两条攻击线同时形成。", "goal": "defendFork"}, {"id": "T116", "level": "中等", "type": "四三", "title": "四三：请选择黑棋的关键落点", "black": [[6, 7], [7, 7], [8, 7], [9, 6], [9, 8], [0, 5], [7, 11]], "white": [[5, 7], [6, 1]], "answer": [9, 7], "alts": [[9, 7]], "route": [], "why": "横向冲四迫使对手防守，再沿另一条活三进攻。", "goal": "fourThree"}, {"id": "T117", "level": "中等", "type": "跳活三", "title": "跳活三：请选择黑棋的关键落点", "black": [[7, 11], [7, 10], [7, 8], [13, 7], [12, 10]], "white": [[9, 10], [10, 2]], "answer": [7, 9], "alts": [[7, 9]], "route": [], "why": "填补跳活三的空隙，形成两端开放的四；对方只能挡住一端。", "goal": "openFour"}, {"id": "T118", "level": "中等", "type": "双活三", "title": "双活三：请选择黑棋的关键落点", "black": [[7, 9], [5, 9], [6, 10], [6, 8], [12, 10], [2, 10]], "white": [[8, 11], [12, 5], [11, 0], [14, 0]], "answer": [6, 9], "alts": [[6, 9]], "route": [], "why": "一手连接两条活三；先核对对手没有直接成五的反击。此题采用普通无禁手规则。", "goal": "fork"}, {"id": "T119", "level": "中等", "type": "预防双三", "title": "预防双三：请选择黑棋的关键落点", "black": [[7, 4], [12, 11], [14, 5]], "white": [[8, 6], [10, 6], [9, 5], [9, 7], [12, 2], [2, 3]], "answer": [9, 6], "alts": [[9, 6]], "route": [], "why": "提前占住对手双活三的交叉点，避免两条攻击线同时形成。", "goal": "defendFork"}, {"id": "T120", "level": "中等", "type": "四三", "title": "四三：请选择黑棋的关键落点", "black": [[5, 8], [6, 8], [7, 8], [8, 9], [8, 7], [14, 13], [3, 14]], "white": [[4, 8], [5, 1], [9, 12], [1, 4]], "answer": [8, 8], "alts": [[8, 8]], "route": [], "why": "横向冲四迫使对手防守，再沿另一条活三进攻。", "goal": "fourThree"}, {"id": "T121", "level": "困难", "type": "连续强制进攻", "title": "找到连续强制获胜的第一手", "black": [[9, 4], [9, 5], [9, 6], [7, 7], [8, 7], [14, 10], [11, 12], [13, 7], [3, 1]], "white": [[9, 3], [6, 8], [1, 12]], "answer": [9, 7], "alts": [[9, 7]], "route": [{"p": 1, "r": 9, "c": 7}, {"p": 2, "r": 9, "c": 8}, {"p": 1, "r": 6, "c": 7}, {"p": 2, "r": 5, "c": 7}, {"p": 1, "r": 10, "c": 7}], "why": "先冲四迫使对方唯一应手，再利用交叉线形成活四，最后成五。需要核对每次防守与反击。", "goal": "proof"}, {"id": "T122", "level": "困难", "type": "跳三与冲四组合", "title": "找到连续强制获胜的第一手", "black": [[8, 12], [8, 11], [8, 10], [10, 9], [7, 9], [13, 1], [7, 1]], "white": [[8, 13], [11, 8], [4, 6], [0, 3]], "answer": [8, 9], "alts": [[8, 9]], "route": [{"p": 1, "r": 8, "c": 9}, {"p": 2, "r": 8, "c": 8}, {"p": 1, "r": 9, "c": 9}, {"p": 2, "r": 6, "c": 9}, {"p": 1, "r": 11, "c": 9}], "why": "先制造冲四，再补另一方向的跳三空隙；对方在强制应手后无法封住活四两端。", "goal": "proof"}, {"id": "T123", "level": "困难", "type": "斜线组合进攻", "title": "找到连续强制获胜的第一手", "black": [[9, 9], [9, 8], [9, 7], [7, 8], [8, 7], [1, 1], [12, 12], [4, 0]], "white": [[9, 10], [6, 5], [10, 1], [0, 13]], "answer": [9, 6], "alts": [[9, 6]], "route": [{"p": 1, "r": 9, "c": 6}, {"p": 2, "r": 9, "c": 5}, {"p": 1, "r": 6, "c": 9}, {"p": 2, "r": 5, "c": 10}, {"p": 1, "r": 10, "c": 5}], "why": "横向冲四吸引防守，转向斜线活三制造两个成五点。", "goal": "proof"}, {"id": "T124", "level": "困难", "type": "连续强制进攻", "title": "找到连续强制获胜的第一手", "black": [[6, 5], [6, 6], [6, 7], [8, 8], [7, 8], [14, 13], [1, 10], [13, 9]], "white": [[6, 4], [9, 9], [6, 14], [2, 5], [14, 3]], "answer": [6, 8], "alts": [[6, 8]], "route": [{"p": 1, "r": 6, "c": 8}, {"p": 2, "r": 6, "c": 9}, {"p": 1, "r": 5, "c": 8}, {"p": 2, "r": 4, "c": 8}, {"p": 1, "r": 9, "c": 8}], "why": "先冲四迫使对方唯一应手，再利用交叉线形成活四，最后成五。需要核对每次防守与反击。", "goal": "proof"}, {"id": "T125", "level": "困难", "type": "跳三与冲四组合", "title": "找到连续强制获胜的第一手", "black": [[7, 4], [7, 5], [7, 6], [9, 7], [6, 7], [0, 14], [11, 13]], "white": [[7, 3], [10, 8], [14, 1]], "answer": [7, 7], "alts": [[7, 7]], "route": [{"p": 1, "r": 7, "c": 7}, {"p": 2, "r": 7, "c": 8}, {"p": 1, "r": 8, "c": 7}, {"p": 2, "r": 5, "c": 7}, {"p": 1, "r": 10, "c": 7}], "why": "先制造冲四，再补另一方向的跳三空隙；对方在强制应手后无法封住活四两端。", "goal": "proof"}, {"id": "T126", "level": "困难", "type": "斜线组合进攻", "title": "找到连续强制获胜的第一手", "black": [[11, 6], [10, 6], [9, 6], [10, 4], [9, 5], [4, 6], [14, 3], [1, 9], [5, 10]], "white": [[12, 6], [7, 3], [12, 13]], "answer": [8, 6], "alts": [[8, 6]], "route": [{"p": 1, "r": 8, "c": 6}, {"p": 2, "r": 7, "c": 6}, {"p": 1, "r": 7, "c": 7}, {"p": 2, "r": 6, "c": 8}, {"p": 1, "r": 11, "c": 3}], "why": "横向冲四吸引防守，转向斜线活三制造两个成五点。", "goal": "proof"}, {"id": "T127", "level": "困难", "type": "连续强制进攻", "title": "找到连续强制获胜的第一手", "black": [[6, 7], [7, 7], [8, 7], [9, 9], [9, 8], [5, 4], [2, 5], [5, 13], [14, 5]], "white": [[5, 7], [10, 10]], "answer": [9, 7], "alts": [[9, 7]], "route": [{"p": 1, "r": 9, "c": 7}, {"p": 2, "r": 10, "c": 7}, {"p": 1, "r": 9, "c": 6}, {"p": 2, "r": 9, "c": 5}, {"p": 1, "r": 9, "c": 10}], "why": "先冲四迫使对方唯一应手，再利用交叉线形成活四，最后成五。需要核对每次防守与反击。", "goal": "proof"}, {"id": "T128", "level": "困难", "type": "跳三与冲四组合", "title": "找到连续强制获胜的第一手", "black": [[6, 8], [6, 7], [6, 6], [4, 5], [7, 5], [6, 0], [3, 11]], "white": [[6, 9], [3, 4], [3, 14], [10, 9], [14, 12], [10, 0]], "answer": [6, 5], "alts": [[6, 5]], "route": [{"p": 1, "r": 6, "c": 5}, {"p": 2, "r": 6, "c": 4}, {"p": 1, "r": 5, "c": 5}, {"p": 2, "r": 3, "c": 5}, {"p": 1, "r": 8, "c": 5}], "why": "先制造冲四，再补另一方向的跳三空隙；对方在强制应手后无法封住活四两端。", "goal": "proof"}, {"id": "T129", "level": "困难", "type": "斜线组合进攻", "title": "找到连续强制获胜的第一手", "black": [[6, 2], [6, 3], [6, 4], [8, 3], [7, 4], [1, 5], [0, 2], [11, 9]], "white": [[6, 1], [9, 6], [2, 12]], "answer": [6, 5], "alts": [[6, 5]], "route": [{"p": 1, "r": 6, "c": 5}, {"p": 2, "r": 6, "c": 6}, {"p": 1, "r": 5, "c": 6}, {"p": 2, "r": 4, "c": 7}, {"p": 1, "r": 9, "c": 2}], "why": "横向冲四吸引防守，转向斜线活三制造两个成五点。", "goal": "proof"}, {"id": "T130", "level": "困难", "type": "连续强制进攻", "title": "找到连续强制获胜的第一手", "black": [[6, 7], [7, 7], [8, 7], [9, 9], [9, 8], [9, 1], [5, 2], [6, 13]], "white": [[5, 7], [10, 10], [0, 8], [2, 14], [14, 4]], "answer": [9, 7], "alts": [[9, 7]], "route": [{"p": 1, "r": 9, "c": 7}, {"p": 2, "r": 10, "c": 7}, {"p": 1, "r": 9, "c": 6}, {"p": 2, "r": 9, "c": 5}, {"p": 1, "r": 9, "c": 10}], "why": "先冲四迫使对方唯一应手，再利用交叉线形成活四，最后成五。需要核对每次防守与反击。", "goal": "proof"}, {"id": "T131", "level": "困难", "type": "跳三与冲四组合", "title": "找到连续强制获胜的第一手", "black": [[7, 2], [7, 3], [7, 4], [5, 5], [8, 5], [2, 11], [2, 14]], "white": [[7, 1], [4, 6], [6, 10], [3, 2], [14, 13]], "answer": [7, 5], "alts": [[7, 5]], "route": [{"p": 1, "r": 7, "c": 5}, {"p": 2, "r": 7, "c": 6}, {"p": 1, "r": 6, "c": 5}, {"p": 2, "r": 4, "c": 5}, {"p": 1, "r": 9, "c": 5}], "why": "先制造冲四，再补另一方向的跳三空隙；对方在强制应手后无法封住活四两端。", "goal": "proof"}, {"id": "T132", "level": "困难", "type": "斜线组合进攻", "title": "找到连续强制获胜的第一手", "black": [[3, 7], [4, 7], [5, 7], [4, 9], [5, 8], [14, 5], [2, 3], [8, 14]], "white": [[2, 7], [7, 10], [12, 11], [11, 14]], "answer": [6, 7], "alts": [[6, 7]], "route": [{"p": 1, "r": 6, "c": 7}, {"p": 2, "r": 7, "c": 7}, {"p": 1, "r": 3, "c": 10}, {"p": 2, "r": 2, "c": 11}, {"p": 1, "r": 7, "c": 6}], "why": "横向冲四吸引防守，转向斜线活三制造两个成五点。", "goal": "proof"}, {"id": "T133", "level": "困难", "type": "连续强制进攻", "title": "找到连续强制获胜的第一手", "black": [[12, 5], [11, 5], [10, 5], [9, 7], [9, 6], [1, 11], [3, 4]], "white": [[13, 5], [8, 8], [5, 9], [4, 0], [4, 13], [0, 6]], "answer": [9, 5], "alts": [[9, 5]], "route": [{"p": 1, "r": 9, "c": 5}, {"p": 2, "r": 8, "c": 5}, {"p": 1, "r": 9, "c": 4}, {"p": 2, "r": 9, "c": 3}, {"p": 1, "r": 9, "c": 8}], "why": "先冲四迫使对方唯一应手，再利用交叉线形成活四，最后成五。需要核对每次防守与反击。", "goal": "proof"}, {"id": "T134", "level": "困难", "type": "跳三与冲四组合", "title": "找到连续强制获胜的第一手", "black": [[9, 2], [9, 3], [9, 4], [11, 5], [8, 5], [6, 8], [12, 10], [2, 4]], "white": [[9, 1], [12, 6], [3, 10]], "answer": [9, 5], "alts": [[9, 5]], "route": [{"p": 1, "r": 9, "c": 5}, {"p": 2, "r": 9, "c": 6}, {"p": 1, "r": 10, "c": 5}, {"p": 2, "r": 7, "c": 5}, {"p": 1, "r": 12, "c": 5}], "why": "先制造冲四，再补另一方向的跳三空隙；对方在强制应手后无法封住活四两端。", "goal": "proof"}, {"id": "T135", "level": "困难", "type": "斜线组合进攻", "title": "找到连续强制获胜的第一手", "black": [[5, 9], [5, 8], [5, 7], [3, 8], [4, 7], [8, 0], [5, 4], [11, 6], [8, 14]], "white": [[5, 10], [2, 5], [1, 14], [8, 3]], "answer": [5, 6], "alts": [[5, 6]], "route": [{"p": 1, "r": 5, "c": 6}, {"p": 2, "r": 5, "c": 5}, {"p": 1, "r": 2, "c": 9}, {"p": 2, "r": 1, "c": 10}, {"p": 1, "r": 6, "c": 5}], "why": "横向冲四吸引防守，转向斜线活三制造两个成五点。", "goal": "proof"}, {"id": "T136", "level": "困难", "type": "连续强制进攻", "title": "找到连续强制获胜的第一手", "black": [[11, 7], [10, 7], [9, 7], [8, 5], [8, 6], [13, 14], [3, 6], [4, 9]], "white": [[12, 7], [7, 4], [10, 0]], "answer": [8, 7], "alts": [[8, 7]], "route": [{"p": 1, "r": 8, "c": 7}, {"p": 2, "r": 7, "c": 7}, {"p": 1, "r": 8, "c": 4}, {"p": 2, "r": 8, "c": 3}, {"p": 1, "r": 8, "c": 8}], "why": "先冲四迫使对方唯一应手，再利用交叉线形成活四，最后成五。需要核对每次防守与反击。", "goal": "proof"}, {"id": "T137", "level": "困难", "type": "跳三与冲四组合", "title": "找到连续强制获胜的第一手", "black": [[12, 7], [11, 7], [10, 7], [9, 9], [9, 6], [5, 6], [2, 9], [1, 1], [8, 0]], "white": [[13, 7], [8, 10], [2, 14]], "answer": [9, 7], "alts": [[9, 7]], "route": [{"p": 1, "r": 9, "c": 7}, {"p": 2, "r": 8, "c": 7}, {"p": 1, "r": 9, "c": 8}, {"p": 2, "r": 9, "c": 5}, {"p": 1, "r": 9, "c": 10}], "why": "先制造冲四，再补另一方向的跳三空隙；对方在强制应手后无法封住活四两端。", "goal": "proof"}, {"id": "T138", "level": "困难", "type": "斜线组合进攻", "title": "找到连续强制获胜的第一手", "black": [[6, 5], [6, 6], [6, 7], [8, 6], [7, 7], [2, 11], [14, 2]], "white": [[6, 4], [9, 9], [14, 7], [9, 13], [0, 5], [0, 2]], "answer": [6, 8], "alts": [[6, 8]], "route": [{"p": 1, "r": 6, "c": 8}, {"p": 2, "r": 6, "c": 9}, {"p": 1, "r": 5, "c": 9}, {"p": 2, "r": 4, "c": 10}, {"p": 1, "r": 9, "c": 5}], "why": "横向冲四吸引防守，转向斜线活三制造两个成五点。", "goal": "proof"}, {"id": "T139", "level": "困难", "type": "连续强制进攻", "title": "找到连续强制获胜的第一手", "black": [[11, 9], [10, 9], [9, 9], [8, 11], [8, 10], [5, 6], [12, 2], [2, 12]], "white": [[12, 9], [7, 12], [5, 0]], "answer": [8, 9], "alts": [[8, 9]], "route": [{"p": 1, "r": 8, "c": 9}, {"p": 2, "r": 7, "c": 9}, {"p": 1, "r": 8, "c": 8}, {"p": 2, "r": 8, "c": 7}, {"p": 1, "r": 8, "c": 12}], "why": "先冲四迫使对方唯一应手，再利用交叉线形成活四，最后成五。需要核对每次防守与反击。", "goal": "proof"}, {"id": "T140", "level": "困难", "type": "跳三与冲四组合", "title": "找到连续强制获胜的第一手", "black": [[6, 5], [6, 6], [6, 7], [4, 8], [7, 8]], "white": [[6, 4], [3, 9], [1, 2], [11, 4], [0, 8]], "answer": [6, 8], "alts": [[6, 8]], "route": [{"p": 1, "r": 6, "c": 8}, {"p": 2, "r": 6, "c": 9}, {"p": 1, "r": 5, "c": 8}, {"p": 2, "r": 3, "c": 8}, {"p": 1, "r": 8, "c": 8}], "why": "先制造冲四，再补另一方向的跳三空隙；对方在强制应手后无法封住活四两端。", "goal": "proof"}, {"id": "T141", "level": "困难", "type": "斜线组合进攻", "title": "找到连续强制获胜的第一手", "black": [[9, 8], [9, 7], [9, 6], [7, 7], [8, 6], [2, 6], [12, 1], [9, 14]], "white": [[9, 9], [6, 4], [2, 1], [0, 9]], "answer": [9, 5], "alts": [[9, 5]], "route": [{"p": 1, "r": 9, "c": 5}, {"p": 2, "r": 9, "c": 4}, {"p": 1, "r": 6, "c": 8}, {"p": 2, "r": 5, "c": 9}, {"p": 1, "r": 10, "c": 4}], "why": "横向冲四吸引防守，转向斜线活三制造两个成五点。", "goal": "proof"}, {"id": "T142", "level": "困难", "type": "连续强制进攻", "title": "找到连续强制获胜的第一手", "black": [[7, 5], [7, 6], [7, 7], [5, 8], [6, 8], [10, 12], [10, 2]], "white": [[7, 4], [4, 9], [6, 13], [10, 5], [13, 6], [2, 6]], "answer": [7, 8], "alts": [[7, 8]], "route": [{"p": 1, "r": 7, "c": 8}, {"p": 2, "r": 7, "c": 9}, {"p": 1, "r": 4, "c": 8}, {"p": 2, "r": 3, "c": 8}, {"p": 1, "r": 8, "c": 8}], "why": "先冲四迫使对方唯一应手，再利用交叉线形成活四，最后成五。需要核对每次防守与反击。", "goal": "proof"}, {"id": "T143", "level": "困难", "type": "跳三与冲四组合", "title": "找到连续强制获胜的第一手", "black": [[8, 6], [7, 6], [6, 6], [5, 8], [5, 5], [13, 9], [13, 0], [2, 14]], "white": [[9, 6], [4, 9], [2, 2], [1, 11], [12, 6]], "answer": [5, 6], "alts": [[5, 6]], "route": [{"p": 1, "r": 5, "c": 6}, {"p": 2, "r": 4, "c": 6}, {"p": 1, "r": 5, "c": 7}, {"p": 2, "r": 5, "c": 4}, {"p": 1, "r": 5, "c": 9}], "why": "先制造冲四，再补另一方向的跳三空隙；对方在强制应手后无法封住活四两端。", "goal": "proof"}, {"id": "T144", "level": "困难", "type": "斜线组合进攻", "title": "找到连续强制获胜的第一手", "black": [[8, 9], [8, 8], [8, 7], [10, 8], [9, 7]], "white": [[8, 10], [11, 5], [14, 12], [1, 1], [6, 3], [4, 0]], "answer": [8, 6], "alts": [[8, 6]], "route": [{"p": 1, "r": 8, "c": 6}, {"p": 2, "r": 8, "c": 5}, {"p": 1, "r": 7, "c": 5}, {"p": 2, "r": 6, "c": 4}, {"p": 1, "r": 11, "c": 9}], "why": "横向冲四吸引防守，转向斜线活三制造两个成五点。", "goal": "proof"}, {"id": "T145", "level": "困难", "type": "连续强制进攻", "title": "找到连续强制获胜的第一手", "black": [[8, 4], [8, 5], [8, 6], [10, 7], [9, 7], [5, 7]], "white": [[8, 3], [11, 8], [2, 8], [8, 0], [14, 3], [11, 11]], "answer": [8, 7], "alts": [[8, 7]], "route": [{"p": 1, "r": 8, "c": 7}, {"p": 2, "r": 8, "c": 8}, {"p": 1, "r": 7, "c": 7}, {"p": 2, "r": 6, "c": 7}, {"p": 1, "r": 11, "c": 7}], "why": "先冲四迫使对方唯一应手，再利用交叉线形成活四，最后成五。需要核对每次防守与反击。", "goal": "proof"}, {"id": "T146", "level": "困难", "type": "跳三与冲四组合", "title": "找到连续强制获胜的第一手", "black": [[6, 8], [7, 8], [8, 8], [9, 6], [9, 9], [12, 9], [1, 5]], "white": [[5, 8], [10, 5], [4, 1], [5, 4], [14, 3]], "answer": [9, 8], "alts": [[9, 8]], "route": [{"p": 1, "r": 9, "c": 8}, {"p": 2, "r": 10, "c": 8}, {"p": 1, "r": 9, "c": 7}, {"p": 2, "r": 9, "c": 10}, {"p": 1, "r": 9, "c": 5}], "why": "先制造冲四，再补另一方向的跳三空隙；对方在强制应手后无法封住活四两端。", "goal": "proof"}, {"id": "T147", "level": "困难", "type": "斜线组合进攻", "title": "找到连续强制获胜的第一手", "black": [[9, 12], [9, 11], [9, 10], [7, 11], [8, 10], [10, 0], [12, 12], [0, 14]], "white": [[9, 13], [6, 8], [0, 8], [1, 0], [1, 5]], "answer": [9, 9], "alts": [[9, 9]], "route": [{"p": 1, "r": 9, "c": 9}, {"p": 2, "r": 9, "c": 8}, {"p": 1, "r": 6, "c": 12}, {"p": 2, "r": 5, "c": 13}, {"p": 1, "r": 10, "c": 8}], "why": "横向冲四吸引防守，转向斜线活三制造两个成五点。", "goal": "proof"}, {"id": "T148", "level": "困难", "type": "连续强制进攻", "title": "找到连续强制获胜的第一手", "black": [[5, 5], [6, 5], [7, 5], [8, 7], [8, 6], [12, 6], [4, 1]], "white": [[4, 5], [9, 8], [12, 11], [4, 9]], "answer": [8, 5], "alts": [[8, 5]], "route": [{"p": 1, "r": 8, "c": 5}, {"p": 2, "r": 9, "c": 5}, {"p": 1, "r": 8, "c": 4}, {"p": 2, "r": 8, "c": 3}, {"p": 1, "r": 8, "c": 8}], "why": "先冲四迫使对方唯一应手，再利用交叉线形成活四，最后成五。需要核对每次防守与反击。", "goal": "proof"}, {"id": "T149", "level": "困难", "type": "跳三与冲四组合", "title": "找到连续强制获胜的第一手", "black": [[5, 8], [5, 7], [5, 6], [7, 5], [4, 5], [4, 1], [0, 1], [12, 9], [5, 13]], "white": [[5, 9], [8, 4], [13, 0], [2, 11], [0, 8], [14, 5]], "answer": [5, 5], "alts": [[5, 5]], "route": [{"p": 1, "r": 5, "c": 5}, {"p": 2, "r": 5, "c": 4}, {"p": 1, "r": 6, "c": 5}, {"p": 2, "r": 3, "c": 5}, {"p": 1, "r": 8, "c": 5}], "why": "先制造冲四，再补另一方向的跳三空隙；对方在强制应手后无法封住活四两端。", "goal": "proof"}, {"id": "T150", "level": "困难", "type": "斜线组合进攻", "title": "找到连续强制获胜的第一手", "black": [[6, 6], [7, 6], [8, 6], [7, 4], [8, 5], [12, 0], [5, 14]], "white": [[5, 6], [10, 3], [5, 0], [14, 3], [0, 7]], "answer": [9, 6], "alts": [[9, 6]], "route": [{"p": 1, "r": 9, "c": 6}, {"p": 2, "r": 10, "c": 6}, {"p": 1, "r": 6, "c": 3}, {"p": 2, "r": 5, "c": 2}, {"p": 1, "r": 10, "c": 7}], "why": "横向冲四吸引防守，转向斜线活三制造两个成五点。", "goal": "proof"}, {"id": "T151", "level": "困难", "type": "连续强制进攻", "title": "找到连续强制获胜的第一手", "black": [[9, 8], [8, 8], [7, 8], [6, 6], [6, 7], [0, 6], [9, 5]], "white": [[10, 8], [5, 5], [1, 1], [4, 1], [2, 12]], "answer": [6, 8], "alts": [[6, 8]], "route": [{"p": 1, "r": 6, "c": 8}, {"p": 2, "r": 5, "c": 8}, {"p": 1, "r": 6, "c": 5}, {"p": 2, "r": 6, "c": 4}, {"p": 1, "r": 6, "c": 9}], "why": "先冲四迫使对方唯一应手，再利用交叉线形成活四，最后成五。需要核对每次防守与反击。", "goal": "proof"}, {"id": "T152", "level": "困难", "type": "跳三与冲四组合", "title": "找到连续强制获胜的第一手", "black": [[9, 9], [8, 9], [7, 9], [6, 11], [6, 8], [8, 1], [2, 11], [8, 4]], "white": [[10, 9], [5, 12], [1, 3], [4, 2], [3, 6]], "answer": [6, 9], "alts": [[6, 9]], "route": [{"p": 1, "r": 6, "c": 9}, {"p": 2, "r": 5, "c": 9}, {"p": 1, "r": 6, "c": 10}, {"p": 2, "r": 6, "c": 7}, {"p": 1, "r": 6, "c": 12}], "why": "先制造冲四，再补另一方向的跳三空隙；对方在强制应手后无法封住活四两端。", "goal": "proof"}, {"id": "T153", "level": "困难", "type": "斜线组合进攻", "title": "找到连续强制获胜的第一手", "black": [[6, 5], [7, 5], [8, 5], [7, 3], [8, 4], [1, 1], [5, 11]], "white": [[5, 5], [10, 2], [12, 10], [12, 13], [9, 11], [14, 0], [12, 7]], "answer": [9, 5], "alts": [[9, 5]], "route": [{"p": 1, "r": 9, "c": 5}, {"p": 2, "r": 10, "c": 5}, {"p": 1, "r": 6, "c": 2}, {"p": 2, "r": 5, "c": 1}, {"p": 1, "r": 10, "c": 6}], "why": "横向冲四吸引防守，转向斜线活三制造两个成五点。", "goal": "proof"}, {"id": "T154", "level": "困难", "type": "连续强制进攻", "title": "找到连续强制获胜的第一手", "black": [[9, 5], [9, 6], [9, 7], [7, 8], [8, 8], [13, 10], [13, 6]], "white": [[9, 4], [6, 9], [0, 3], [3, 11]], "answer": [9, 8], "alts": [[9, 8]], "route": [{"p": 1, "r": 9, "c": 8}, {"p": 2, "r": 9, "c": 9}, {"p": 1, "r": 6, "c": 8}, {"p": 2, "r": 5, "c": 8}, {"p": 1, "r": 10, "c": 8}], "why": "先冲四迫使对方唯一应手，再利用交叉线形成活四，最后成五。需要核对每次防守与反击。", "goal": "proof"}, {"id": "T155", "level": "困难", "type": "跳三与冲四组合", "title": "找到连续强制获胜的第一手", "black": [[8, 8], [8, 7], [8, 6], [6, 5], [9, 5], [11, 11], [0, 0], [12, 3]], "white": [[8, 9], [5, 4], [9, 2], [14, 12]], "answer": [8, 5], "alts": [[8, 5]], "route": [{"p": 1, "r": 8, "c": 5}, {"p": 2, "r": 8, "c": 4}, {"p": 1, "r": 7, "c": 5}, {"p": 2, "r": 5, "c": 5}, {"p": 1, "r": 10, "c": 5}], "why": "先制造冲四，再补另一方向的跳三空隙；对方在强制应手后无法封住活四两端。", "goal": "proof"}, {"id": "T156", "level": "困难", "type": "斜线组合进攻", "title": "找到连续强制获胜的第一手", "black": [[2, 8], [3, 8], [4, 8], [3, 10], [4, 9], [5, 2], [0, 2], [7, 5]], "white": [[1, 8], [6, 11], [11, 14], [12, 6]], "answer": [5, 8], "alts": [[5, 8]], "route": [{"p": 1, "r": 5, "c": 8}, {"p": 2, "r": 6, "c": 8}, {"p": 1, "r": 2, "c": 11}, {"p": 2, "r": 1, "c": 12}, {"p": 1, "r": 6, "c": 7}], "why": "横向冲四吸引防守，转向斜线活三制造两个成五点。", "goal": "proof"}, {"id": "T157", "level": "困难", "type": "连续强制进攻", "title": "找到连续强制获胜的第一手", "black": [[8, 7], [7, 7], [6, 7], [5, 5], [5, 6], [0, 9], [1, 5], [2, 14]], "white": [[9, 7], [4, 4], [8, 14]], "answer": [5, 7], "alts": [[5, 7]], "route": [{"p": 1, "r": 5, "c": 7}, {"p": 2, "r": 4, "c": 7}, {"p": 1, "r": 5, "c": 4}, {"p": 2, "r": 5, "c": 3}, {"p": 1, "r": 5, "c": 8}], "why": "先冲四迫使对方唯一应手，再利用交叉线形成活四，最后成五。需要核对每次防守与反击。", "goal": "proof"}, {"id": "T158", "level": "困难", "type": "跳三与冲四组合", "title": "找到连续强制获胜的第一手", "black": [[5, 3], [5, 4], [5, 5], [3, 6], [6, 6], [1, 3], [8, 11]], "white": [[5, 2], [2, 7], [14, 7], [10, 5]], "answer": [5, 6], "alts": [[5, 6]], "route": [{"p": 1, "r": 5, "c": 6}, {"p": 2, "r": 5, "c": 7}, {"p": 1, "r": 4, "c": 6}, {"p": 2, "r": 2, "c": 6}, {"p": 1, "r": 7, "c": 6}], "why": "先制造冲四，再补另一方向的跳三空隙；对方在强制应手后无法封住活四两端。", "goal": "proof"}, {"id": "T159", "level": "困难", "type": "斜线组合进攻", "title": "找到连续强制获胜的第一手", "black": [[5, 9], [6, 9], [7, 9], [6, 7], [7, 8], [14, 11], [1, 0], [1, 13], [4, 0]], "white": [[4, 9], [9, 6], [1, 3], [5, 3], [13, 2]], "answer": [8, 9], "alts": [[8, 9]], "route": [{"p": 1, "r": 8, "c": 9}, {"p": 2, "r": 9, "c": 9}, {"p": 1, "r": 5, "c": 6}, {"p": 2, "r": 4, "c": 5}, {"p": 1, "r": 9, "c": 10}], "why": "横向冲四吸引防守，转向斜线活三制造两个成五点。", "goal": "proof"}, {"id": "T160", "level": "困难", "type": "连续强制进攻", "title": "找到连续强制获胜的第一手", "black": [[8, 4], [8, 5], [8, 6], [6, 7], [7, 7]], "white": [[8, 3], [5, 8], [9, 12], [14, 5]], "answer": [8, 7], "alts": [[8, 7]], "route": [{"p": 1, "r": 8, "c": 7}, {"p": 2, "r": 8, "c": 8}, {"p": 1, "r": 5, "c": 7}, {"p": 2, "r": 4, "c": 7}, {"p": 1, "r": 9, "c": 7}], "why": "先冲四迫使对方唯一应手，再利用交叉线形成活四，最后成五。需要核对每次防守与反击。", "goal": "proof"}, {"id": "T161", "level": "困难", "type": "跳三与冲四组合", "title": "找到连续强制获胜的第一手", "black": [[12, 8], [11, 8], [10, 8], [9, 6], [9, 9], [13, 0], [2, 5]], "white": [[13, 8], [8, 5], [8, 0], [8, 14], [3, 8], [11, 3]], "answer": [9, 8], "alts": [[9, 8]], "route": [{"p": 1, "r": 9, "c": 8}, {"p": 2, "r": 8, "c": 8}, {"p": 1, "r": 9, "c": 7}, {"p": 2, "r": 9, "c": 5}, {"p": 1, "r": 9, "c": 10}], "why": "先制造冲四，再补另一方向的跳三空隙；对方在强制应手后无法封住活四两端。", "goal": "proof"}, {"id": "T162", "level": "困难", "type": "斜线组合进攻", "title": "找到连续强制获胜的第一手", "black": [[11, 6], [10, 6], [9, 6], [10, 8], [9, 7], [9, 2], [1, 8], [6, 1]], "white": [[12, 6], [7, 9], [11, 14], [2, 11]], "answer": [8, 6], "alts": [[8, 6]], "route": [{"p": 1, "r": 8, "c": 6}, {"p": 2, "r": 7, "c": 6}, {"p": 1, "r": 7, "c": 5}, {"p": 2, "r": 6, "c": 4}, {"p": 1, "r": 11, "c": 9}], "why": "横向冲四吸引防守，转向斜线活三制造两个成五点。", "goal": "proof"}, {"id": "T163", "level": "困难", "type": "连续强制进攻", "title": "找到连续强制获胜的第一手", "black": [[8, 6], [8, 7], [8, 8], [6, 9], [7, 9], [13, 1], [0, 2], [5, 3], [1, 6]], "white": [[8, 5], [5, 10], [10, 11], [13, 12]], "answer": [8, 9], "alts": [[8, 9]], "route": [{"p": 1, "r": 8, "c": 9}, {"p": 2, "r": 8, "c": 10}, {"p": 1, "r": 5, "c": 9}, {"p": 2, "r": 4, "c": 9}, {"p": 1, "r": 9, "c": 9}], "why": "先冲四迫使对方唯一应手，再利用交叉线形成活四，最后成五。需要核对每次防守与反击。", "goal": "proof"}, {"id": "T164", "level": "困难", "type": "跳三与冲四组合", "title": "找到连续强制获胜的第一手", "black": [[6, 4], [6, 5], [6, 6], [8, 7], [5, 7], [9, 3], [10, 0], [0, 0]], "white": [[6, 3], [9, 8], [10, 11], [13, 11], [6, 14]], "answer": [6, 7], "alts": [[6, 7]], "route": [{"p": 1, "r": 6, "c": 7}, {"p": 2, "r": 6, "c": 8}, {"p": 1, "r": 7, "c": 7}, {"p": 2, "r": 4, "c": 7}, {"p": 1, "r": 9, "c": 7}], "why": "先制造冲四，再补另一方向的跳三空隙；对方在强制应手后无法封住活四两端。", "goal": "proof"}, {"id": "T165", "level": "困难", "type": "斜线组合进攻", "title": "找到连续强制获胜的第一手", "black": [[6, 4], [6, 5], [6, 6], [4, 5], [5, 6], [11, 8], [4, 12]], "white": [[6, 3], [3, 8], [0, 13], [13, 12], [9, 2]], "answer": [6, 7], "alts": [[6, 7]], "route": [{"p": 1, "r": 6, "c": 7}, {"p": 2, "r": 6, "c": 8}, {"p": 1, "r": 3, "c": 4}, {"p": 2, "r": 2, "c": 3}, {"p": 1, "r": 7, "c": 8}], "why": "横向冲四吸引防守，转向斜线活三制造两个成五点。", "goal": "proof"}, {"id": "T166", "level": "困难", "type": "连续强制进攻", "title": "找到连续强制获胜的第一手", "black": [[2, 8], [3, 8], [4, 8], [5, 6], [5, 7], [9, 3]], "white": [[1, 8], [6, 5], [14, 8], [8, 0], [7, 14]], "answer": [5, 8], "alts": [[5, 8]], "route": [{"p": 1, "r": 5, "c": 8}, {"p": 2, "r": 6, "c": 8}, {"p": 1, "r": 5, "c": 9}, {"p": 2, "r": 5, "c": 10}, {"p": 1, "r": 5, "c": 5}], "why": "先冲四迫使对方唯一应手，再利用交叉线形成活四，最后成五。需要核对每次防守与反击。", "goal": "proof"}, {"id": "T167", "level": "困难", "type": "跳三与冲四组合", "title": "找到连续强制获胜的第一手", "black": [[5, 5], [5, 6], [5, 7], [7, 8], [4, 8], [12, 12], [5, 1]], "white": [[5, 4], [8, 9], [0, 12], [10, 5], [13, 5]], "answer": [5, 8], "alts": [[5, 8]], "route": [{"p": 1, "r": 5, "c": 8}, {"p": 2, "r": 5, "c": 9}, {"p": 1, "r": 6, "c": 8}, {"p": 2, "r": 3, "c": 8}, {"p": 1, "r": 8, "c": 8}], "why": "先制造冲四，再补另一方向的跳三空隙；对方在强制应手后无法封住活四两端。", "goal": "proof"}, {"id": "T168", "level": "困难", "type": "斜线组合进攻", "title": "找到连续强制获胜的第一手", "black": [[11, 6], [10, 6], [9, 6], [10, 4], [9, 5], [12, 13], [2, 7], [0, 2]], "white": [[12, 6], [7, 3], [0, 11]], "answer": [8, 6], "alts": [[8, 6]], "route": [{"p": 1, "r": 8, "c": 6}, {"p": 2, "r": 7, "c": 6}, {"p": 1, "r": 7, "c": 7}, {"p": 2, "r": 6, "c": 8}, {"p": 1, "r": 11, "c": 3}], "why": "横向冲四吸引防守，转向斜线活三制造两个成五点。", "goal": "proof"}, {"id": "T169", "level": "困难", "type": "连续强制进攻", "title": "找到连续强制获胜的第一手", "black": [[8, 6], [8, 7], [8, 8], [6, 9], [7, 9], [3, 1], [6, 13], [7, 2]], "white": [[8, 5], [5, 10], [14, 5], [0, 0], [0, 10]], "answer": [8, 9], "alts": [[8, 9]], "route": [{"p": 1, "r": 8, "c": 9}, {"p": 2, "r": 8, "c": 10}, {"p": 1, "r": 5, "c": 9}, {"p": 2, "r": 4, "c": 9}, {"p": 1, "r": 9, "c": 9}], "why": "先冲四迫使对方唯一应手，再利用交叉线形成活四，最后成五。需要核对每次防守与反击。", "goal": "proof"}, {"id": "T170", "level": "困难", "type": "跳三与冲四组合", "title": "找到连续强制获胜的第一手", "black": [[8, 7], [7, 7], [6, 7], [5, 5], [5, 8], [1, 8], [0, 12]], "white": [[9, 7], [4, 4], [4, 14], [11, 14]], "answer": [5, 7], "alts": [[5, 7]], "route": [{"p": 1, "r": 5, "c": 7}, {"p": 2, "r": 4, "c": 7}, {"p": 1, "r": 5, "c": 6}, {"p": 2, "r": 5, "c": 4}, {"p": 1, "r": 5, "c": 9}], "why": "先制造冲四，再补另一方向的跳三空隙；对方在强制应手后无法封住活四两端。", "goal": "proof"}, {"id": "T171", "level": "困难", "type": "斜线组合进攻", "title": "找到连续强制获胜的第一手", "black": [[6, 2], [6, 3], [6, 4], [4, 3], [5, 4], [12, 6], [5, 14]], "white": [[6, 1], [3, 6], [12, 2], [12, 10], [7, 8], [1, 0]], "answer": [6, 5], "alts": [[6, 5]], "route": [{"p": 1, "r": 6, "c": 5}, {"p": 2, "r": 6, "c": 6}, {"p": 1, "r": 3, "c": 2}, {"p": 2, "r": 2, "c": 1}, {"p": 1, "r": 7, "c": 6}], "why": "横向冲四吸引防守，转向斜线活三制造两个成五点。", "goal": "proof"}, {"id": "T172", "level": "困难", "type": "连续强制进攻", "title": "找到连续强制获胜的第一手", "black": [[8, 9], [7, 9], [6, 9], [5, 7], [5, 8], [13, 2], [2, 2], [7, 0]], "white": [[9, 9], [4, 6], [2, 13], [10, 5]], "answer": [5, 9], "alts": [[5, 9]], "route": [{"p": 1, "r": 5, "c": 9}, {"p": 2, "r": 4, "c": 9}, {"p": 1, "r": 5, "c": 6}, {"p": 2, "r": 5, "c": 5}, {"p": 1, "r": 5, "c": 10}], "why": "先冲四迫使对方唯一应手，再利用交叉线形成活四，最后成五。需要核对每次防守与反击。", "goal": "proof"}, {"id": "T173", "level": "困难", "type": "跳三与冲四组合", "title": "找到连续强制获胜的第一手", "black": [[12, 5], [11, 5], [10, 5], [9, 7], [9, 4], [5, 14]], "white": [[13, 5], [8, 8], [12, 13], [12, 0], [7, 11]], "answer": [9, 5], "alts": [[9, 5]], "route": [{"p": 1, "r": 9, "c": 5}, {"p": 2, "r": 8, "c": 5}, {"p": 1, "r": 9, "c": 6}, {"p": 2, "r": 9, "c": 3}, {"p": 1, "r": 9, "c": 8}], "why": "先制造冲四，再补另一方向的跳三空隙；对方在强制应手后无法封住活四两端。", "goal": "proof"}, {"id": "T174", "level": "困难", "type": "斜线组合进攻", "title": "找到连续强制获胜的第一手", "black": [[3, 7], [4, 7], [5, 7], [4, 5], [5, 6], [0, 14], [3, 0], [8, 13]], "white": [[2, 7], [7, 4], [0, 3], [7, 10], [9, 0]], "answer": [6, 7], "alts": [[6, 7]], "route": [{"p": 1, "r": 6, "c": 7}, {"p": 2, "r": 7, "c": 7}, {"p": 1, "r": 3, "c": 4}, {"p": 2, "r": 2, "c": 3}, {"p": 1, "r": 7, "c": 8}], "why": "横向冲四吸引防守，转向斜线活三制造两个成五点。", "goal": "proof"}, {"id": "T175", "level": "困难", "type": "连续强制进攻", "title": "找到连续强制获胜的第一手", "black": [[5, 6], [6, 6], [7, 6], [8, 4], [8, 5], [0, 12], [9, 9]], "white": [[4, 6], [9, 3], [13, 11], [6, 1]], "answer": [8, 6], "alts": [[8, 6]], "route": [{"p": 1, "r": 8, "c": 6}, {"p": 2, "r": 9, "c": 6}, {"p": 1, "r": 8, "c": 3}, {"p": 2, "r": 8, "c": 2}, {"p": 1, "r": 8, "c": 7}], "why": "先冲四迫使对方唯一应手，再利用交叉线形成活四，最后成五。需要核对每次防守与反击。", "goal": "proof"}, {"id": "T176", "level": "困难", "type": "跳三与冲四组合", "title": "找到连续强制获胜的第一手", "black": [[4, 6], [5, 6], [6, 6], [7, 4], [7, 7], [3, 13], [0, 14], [8, 13]], "white": [[3, 6], [8, 3], [3, 10]], "answer": [7, 6], "alts": [[7, 6]], "route": [{"p": 1, "r": 7, "c": 6}, {"p": 2, "r": 8, "c": 6}, {"p": 1, "r": 7, "c": 5}, {"p": 2, "r": 7, "c": 8}, {"p": 1, "r": 7, "c": 3}], "why": "先制造冲四，再补另一方向的跳三空隙；对方在强制应手后无法封住活四两端。", "goal": "proof"}, {"id": "T177", "level": "困难", "type": "斜线组合进攻", "title": "找到连续强制获胜的第一手", "black": [[10, 8], [9, 8], [8, 8], [9, 10], [8, 9], [10, 0], [13, 3], [14, 12]], "white": [[11, 8], [6, 11], [11, 14]], "answer": [7, 8], "alts": [[7, 8]], "route": [{"p": 1, "r": 7, "c": 8}, {"p": 2, "r": 6, "c": 8}, {"p": 1, "r": 6, "c": 7}, {"p": 2, "r": 5, "c": 6}, {"p": 1, "r": 10, "c": 11}], "why": "横向冲四吸引防守，转向斜线活三制造两个成五点。", "goal": "proof"}, {"id": "T178", "level": "困难", "type": "连续强制进攻", "title": "找到连续强制获胜的第一手", "black": [[10, 6], [9, 6], [8, 6], [7, 8], [7, 7], [13, 3], [1, 4], [9, 3], [0, 12], [12, 13]], "white": [[11, 6], [6, 9]], "answer": [7, 6], "alts": [[7, 6]], "route": [{"p": 1, "r": 7, "c": 6}, {"p": 2, "r": 6, "c": 6}, {"p": 1, "r": 7, "c": 5}, {"p": 2, "r": 7, "c": 4}, {"p": 1, "r": 7, "c": 9}], "why": "先冲四迫使对方唯一应手，再利用交叉线形成活四，最后成五。需要核对每次防守与反击。", "goal": "proof"}, {"id": "T179", "level": "困难", "type": "跳三与冲四组合", "title": "找到连续强制获胜的第一手", "black": [[9, 3], [9, 4], [9, 5], [11, 6], [8, 6], [6, 10], [14, 12]], "white": [[9, 2], [12, 7], [14, 2], [3, 6], [0, 13]], "answer": [9, 6], "alts": [[9, 6]], "route": [{"p": 1, "r": 9, "c": 6}, {"p": 2, "r": 9, "c": 7}, {"p": 1, "r": 10, "c": 6}, {"p": 2, "r": 7, "c": 6}, {"p": 1, "r": 12, "c": 6}], "why": "先制造冲四，再补另一方向的跳三空隙；对方在强制应手后无法封住活四两端。", "goal": "proof"}, {"id": "T180", "level": "困难", "type": "斜线组合进攻", "title": "找到连续强制获胜的第一手", "black": [[12, 5], [11, 5], [10, 5], [11, 7], [10, 6], [3, 9], [10, 14]], "white": [[13, 5], [8, 8], [2, 4], [9, 2]], "answer": [9, 5], "alts": [[9, 5]], "route": [{"p": 1, "r": 9, "c": 5}, {"p": 2, "r": 8, "c": 5}, {"p": 1, "r": 8, "c": 4}, {"p": 2, "r": 7, "c": 3}, {"p": 1, "r": 12, "c": 8}], "why": "横向冲四吸引防守，转向斜线活三制造两个成五点。", "goal": "proof"}, {"id": "T181", "level": "困难", "type": "连续强制进攻", "title": "找到连续强制获胜的第一手", "black": [[8, 6], [7, 6], [6, 6], [5, 8], [5, 7], [8, 9], [12, 2]], "white": [[9, 6], [4, 9], [9, 3], [2, 6], [6, 14]], "answer": [5, 6], "alts": [[5, 6]], "route": [{"p": 1, "r": 5, "c": 6}, {"p": 2, "r": 4, "c": 6}, {"p": 1, "r": 5, "c": 5}, {"p": 2, "r": 5, "c": 4}, {"p": 1, "r": 5, "c": 9}], "why": "先冲四迫使对方唯一应手，再利用交叉线形成活四，最后成五。需要核对每次防守与反击。", "goal": "proof"}, {"id": "T182", "level": "困难", "type": "跳三与冲四组合", "title": "找到连续强制获胜的第一手", "black": [[8, 8], [7, 8], [6, 8], [5, 10], [5, 7], [10, 13], [8, 0], [2, 14]], "white": [[9, 8], [4, 11], [1, 11], [0, 0]], "answer": [5, 8], "alts": [[5, 8]], "route": [{"p": 1, "r": 5, "c": 8}, {"p": 2, "r": 4, "c": 8}, {"p": 1, "r": 5, "c": 9}, {"p": 2, "r": 5, "c": 6}, {"p": 1, "r": 5, "c": 11}], "why": "先制造冲四，再补另一方向的跳三空隙；对方在强制应手后无法封住活四两端。", "goal": "proof"}, {"id": "T183", "level": "困难", "type": "斜线组合进攻", "title": "找到连续强制获胜的第一手", "black": [[9, 8], [9, 7], [9, 6], [7, 7], [8, 6], [9, 14], [13, 1], [1, 1], [5, 13]], "white": [[9, 9], [6, 4], [8, 0]], "answer": [9, 5], "alts": [[9, 5]], "route": [{"p": 1, "r": 9, "c": 5}, {"p": 2, "r": 9, "c": 4}, {"p": 1, "r": 6, "c": 8}, {"p": 2, "r": 5, "c": 9}, {"p": 1, "r": 10, "c": 4}], "why": "横向冲四吸引防守，转向斜线活三制造两个成五点。", "goal": "proof"}, {"id": "T184", "level": "困难", "type": "连续强制进攻", "title": "找到连续强制获胜的第一手", "black": [[7, 4], [7, 5], [7, 6], [5, 7], [6, 7], [0, 13], [10, 13], [6, 13]], "white": [[7, 3], [4, 8], [12, 10], [0, 6], [5, 0]], "answer": [7, 7], "alts": [[7, 7]], "route": [{"p": 1, "r": 7, "c": 7}, {"p": 2, "r": 7, "c": 8}, {"p": 1, "r": 4, "c": 7}, {"p": 2, "r": 3, "c": 7}, {"p": 1, "r": 8, "c": 7}], "why": "先冲四迫使对方唯一应手，再利用交叉线形成活四，最后成五。需要核对每次防守与反击。", "goal": "proof"}, {"id": "T185", "level": "困难", "type": "跳三与冲四组合", "title": "找到连续强制获胜的第一手", "black": [[7, 11], [7, 10], [7, 9], [5, 8], [8, 8], [4, 0], [14, 14], [3, 11]], "white": [[7, 12], [4, 7], [1, 5], [0, 0], [12, 1], [14, 9]], "answer": [7, 8], "alts": [[7, 8]], "route": [{"p": 1, "r": 7, "c": 8}, {"p": 2, "r": 7, "c": 7}, {"p": 1, "r": 6, "c": 8}, {"p": 2, "r": 4, "c": 8}, {"p": 1, "r": 9, "c": 8}], "why": "先制造冲四，再补另一方向的跳三空隙；对方在强制应手后无法封住活四两端。", "goal": "proof"}, {"id": "T186", "level": "困难", "type": "斜线组合进攻", "title": "找到连续强制获胜的第一手", "black": [[5, 6], [5, 7], [5, 8], [3, 7], [4, 8], [8, 7]], "white": [[5, 5], [2, 10], [13, 12], [11, 6]], "answer": [5, 9], "alts": [[5, 9]], "route": [{"p": 1, "r": 5, "c": 9}, {"p": 2, "r": 5, "c": 10}, {"p": 1, "r": 2, "c": 6}, {"p": 2, "r": 1, "c": 5}, {"p": 1, "r": 6, "c": 10}], "why": "横向冲四吸引防守，转向斜线活三制造两个成五点。", "goal": "proof"}, {"id": "T187", "level": "困难", "type": "连续强制进攻", "title": "找到连续强制获胜的第一手", "black": [[12, 5], [11, 5], [10, 5], [9, 7], [9, 6], [6, 14], [3, 2]], "white": [[13, 5], [8, 8], [8, 1], [3, 12], [11, 12]], "answer": [9, 5], "alts": [[9, 5]], "route": [{"p": 1, "r": 9, "c": 5}, {"p": 2, "r": 8, "c": 5}, {"p": 1, "r": 9, "c": 4}, {"p": 2, "r": 9, "c": 3}, {"p": 1, "r": 9, "c": 8}], "why": "先冲四迫使对方唯一应手，再利用交叉线形成活四，最后成五。需要核对每次防守与反击。", "goal": "proof"}, {"id": "T188", "level": "困难", "type": "跳三与冲四组合", "title": "找到连续强制获胜的第一手", "black": [[5, 8], [6, 8], [7, 8], [8, 10], [8, 7], [13, 5], [12, 0], [2, 2], [7, 3]], "white": [[4, 8], [9, 11]], "answer": [8, 8], "alts": [[8, 8]], "route": [{"p": 1, "r": 8, "c": 8}, {"p": 2, "r": 9, "c": 8}, {"p": 1, "r": 8, "c": 9}, {"p": 2, "r": 8, "c": 6}, {"p": 1, "r": 8, "c": 11}], "why": "先制造冲四，再补另一方向的跳三空隙；对方在强制应手后无法封住活四两端。", "goal": "proof"}, {"id": "T189", "level": "困难", "type": "斜线组合进攻", "title": "找到连续强制获胜的第一手", "black": [[9, 2], [9, 3], [9, 4], [7, 3], [8, 4], [9, 10], [1, 9]], "white": [[9, 1], [6, 6], [4, 0], [4, 13], [7, 13]], "answer": [9, 5], "alts": [[9, 5]], "route": [{"p": 1, "r": 9, "c": 5}, {"p": 2, "r": 9, "c": 6}, {"p": 1, "r": 6, "c": 2}, {"p": 2, "r": 5, "c": 1}, {"p": 1, "r": 10, "c": 6}], "why": "横向冲四吸引防守，转向斜线活三制造两个成五点。", "goal": "proof"}, {"id": "T190", "level": "困难", "type": "连续强制进攻", "title": "找到连续强制获胜的第一手", "black": [[3, 9], [4, 9], [5, 9], [6, 7], [6, 8], [14, 4], [14, 13], [10, 7]], "white": [[2, 9], [7, 6], [3, 0], [11, 10], [1, 4], [14, 9]], "answer": [6, 9], "alts": [[6, 9]], "route": [{"p": 1, "r": 6, "c": 9}, {"p": 2, "r": 7, "c": 9}, {"p": 1, "r": 6, "c": 10}, {"p": 2, "r": 6, "c": 11}, {"p": 1, "r": 6, "c": 6}], "why": "先冲四迫使对方唯一应手，再利用交叉线形成活四，最后成五。需要核对每次防守与反击。", "goal": "proof"}, {"id": "T191", "level": "困难", "type": "跳三与冲四组合", "title": "找到连续强制获胜的第一手", "black": [[5, 5], [6, 5], [7, 5], [8, 7], [8, 4], [13, 12], [1, 8]], "white": [[4, 5], [9, 8], [12, 0], [1, 1], [13, 5]], "answer": [8, 5], "alts": [[8, 5]], "route": [{"p": 1, "r": 8, "c": 5}, {"p": 2, "r": 9, "c": 5}, {"p": 1, "r": 8, "c": 6}, {"p": 2, "r": 8, "c": 3}, {"p": 1, "r": 8, "c": 8}], "why": "先制造冲四，再补另一方向的跳三空隙；对方在强制应手后无法封住活四两端。", "goal": "proof"}, {"id": "T192", "level": "困难", "type": "斜线组合进攻", "title": "找到连续强制获胜的第一手", "black": [[12, 9], [11, 9], [10, 9], [11, 11], [10, 10], [8, 4], [1, 12], [3, 9], [4, 5]], "white": [[13, 9], [8, 12], [10, 0]], "answer": [9, 9], "alts": [[9, 9]], "route": [{"p": 1, "r": 9, "c": 9}, {"p": 2, "r": 8, "c": 9}, {"p": 1, "r": 8, "c": 8}, {"p": 2, "r": 7, "c": 7}, {"p": 1, "r": 12, "c": 12}], "why": "横向冲四吸引防守，转向斜线活三制造两个成五点。", "goal": "proof"}, {"id": "T193", "level": "困难", "type": "连续强制进攻", "title": "找到连续强制获胜的第一手", "black": [[9, 11], [9, 10], [9, 9], [7, 8], [8, 8], [13, 5]], "white": [[9, 12], [6, 7], [12, 11], [9, 1], [6, 11], [2, 14]], "answer": [9, 8], "alts": [[9, 8]], "route": [{"p": 1, "r": 9, "c": 8}, {"p": 2, "r": 9, "c": 7}, {"p": 1, "r": 6, "c": 8}, {"p": 2, "r": 5, "c": 8}, {"p": 1, "r": 10, "c": 8}], "why": "先冲四迫使对方唯一应手，再利用交叉线形成活四，最后成五。需要核对每次防守与反击。", "goal": "proof"}, {"id": "T194", "level": "困难", "type": "跳三与冲四组合", "title": "找到连续强制获胜的第一手", "black": [[9, 2], [9, 3], [9, 4], [11, 5], [8, 5], [6, 2]], "white": [[9, 1], [12, 6], [13, 12], [14, 1], [4, 7], [0, 7], [3, 10]], "answer": [9, 5], "alts": [[9, 5]], "route": [{"p": 1, "r": 9, "c": 5}, {"p": 2, "r": 9, "c": 6}, {"p": 1, "r": 10, "c": 5}, {"p": 2, "r": 7, "c": 5}, {"p": 1, "r": 12, "c": 5}], "why": "先制造冲四，再补另一方向的跳三空隙；对方在强制应手后无法封住活四两端。", "goal": "proof"}, {"id": "T195", "level": "困难", "type": "斜线组合进攻", "title": "找到连续强制获胜的第一手", "black": [[3, 9], [4, 9], [5, 9], [4, 7], [5, 8], [12, 9], [11, 14]], "white": [[2, 9], [7, 6], [12, 6], [4, 13]], "answer": [6, 9], "alts": [[6, 9]], "route": [{"p": 1, "r": 6, "c": 9}, {"p": 2, "r": 7, "c": 9}, {"p": 1, "r": 3, "c": 6}, {"p": 2, "r": 2, "c": 5}, {"p": 1, "r": 7, "c": 10}], "why": "横向冲四吸引防守，转向斜线活三制造两个成五点。", "goal": "proof"}, {"id": "T196", "level": "困难", "type": "连续强制进攻", "title": "找到连续强制获胜的第一手", "black": [[8, 10], [8, 9], [8, 8], [10, 7], [9, 7], [13, 11], [7, 3]], "white": [[8, 11], [11, 6], [3, 0], [0, 8], [5, 14], [11, 14]], "answer": [8, 7], "alts": [[8, 7]], "route": [{"p": 1, "r": 8, "c": 7}, {"p": 2, "r": 8, "c": 6}, {"p": 1, "r": 7, "c": 7}, {"p": 2, "r": 6, "c": 7}, {"p": 1, "r": 11, "c": 7}], "why": "先冲四迫使对方唯一应手，再利用交叉线形成活四，最后成五。需要核对每次防守与反击。", "goal": "proof"}, {"id": "T197", "level": "困难", "type": "跳三与冲四组合", "title": "找到连续强制获胜的第一手", "black": [[10, 7], [9, 7], [8, 7], [7, 9], [7, 6], [13, 1], [1, 9], [0, 0]], "white": [[11, 7], [6, 10], [11, 12], [2, 3]], "answer": [7, 7], "alts": [[7, 7]], "route": [{"p": 1, "r": 7, "c": 7}, {"p": 2, "r": 6, "c": 7}, {"p": 1, "r": 7, "c": 8}, {"p": 2, "r": 7, "c": 5}, {"p": 1, "r": 7, "c": 10}], "why": "先制造冲四，再补另一方向的跳三空隙；对方在强制应手后无法封住活四两端。", "goal": "proof"}, {"id": "T198", "level": "困难", "type": "斜线组合进攻", "title": "找到连续强制获胜的第一手", "black": [[9, 8], [8, 8], [7, 8], [8, 6], [7, 7], [13, 14], [11, 2], [1, 13]], "white": [[10, 8], [5, 5], [9, 12], [0, 9]], "answer": [6, 8], "alts": [[6, 8]], "route": [{"p": 1, "r": 6, "c": 8}, {"p": 2, "r": 5, "c": 8}, {"p": 1, "r": 5, "c": 9}, {"p": 2, "r": 4, "c": 10}, {"p": 1, "r": 9, "c": 5}], "why": "横向冲四吸引防守，转向斜线活三制造两个成五点。", "goal": "proof"}, {"id": "T199", "level": "困难", "type": "连续强制进攻", "title": "找到连续强制获胜的第一手", "black": [[6, 4], [6, 5], [6, 6], [4, 7], [5, 7], [1, 2], [6, 11], [11, 7]], "white": [[6, 3], [3, 8], [12, 13], [12, 2]], "answer": [6, 7], "alts": [[6, 7]], "route": [{"p": 1, "r": 6, "c": 7}, {"p": 2, "r": 6, "c": 8}, {"p": 1, "r": 3, "c": 7}, {"p": 2, "r": 2, "c": 7}, {"p": 1, "r": 7, "c": 7}], "why": "先冲四迫使对方唯一应手，再利用交叉线形成活四，最后成五。需要核对每次防守与反击。", "goal": "proof"}, {"id": "T200", "level": "困难", "type": "跳三与冲四组合", "title": "找到连续强制获胜的第一手", "black": [[9, 5], [9, 6], [9, 7], [11, 8], [8, 8], [4, 7], [10, 0], [14, 4], [9, 13]], "white": [[9, 4], [12, 9], [0, 2]], "answer": [9, 8], "alts": [[9, 8]], "route": [{"p": 1, "r": 9, "c": 8}, {"p": 2, "r": 9, "c": 9}, {"p": 1, "r": 10, "c": 8}, {"p": 2, "r": 7, "c": 8}, {"p": 1, "r": 12, "c": 8}], "why": "先制造冲四，再补另一方向的跳三空隙；对方在强制应手后无法封住活四两端。", "goal": "proof"}];</script><script>
+/* Gomoku Pro v4: offline training, coach, records and optional Renju-style fouls. */
+var GomokuPro=(function(){
+  'use strict';
+  var N=15,D=[[1,0],[0,1],[1,1],[1,-1]],KEY='gomoku-training-v4';
+  function blank(){return Array.from({length:N},function(){return Array(N).fill(0);});}
+  function lineCount(b,r,c,p,dr,dc){var n=1;for(var s of[-1,1]){var x=r+dr*s,y=c+dc*s;while(x>=0&&y>=0&&x<N&&y<N&&b[x][y]===p){n++;x+=dr*s;y+=dc*s;}}return n;}
+  function forbidden(b,r,c,p,rules){
+    if(rules!=='renju'||p!==1||b[r][c])return null;
+    b[r][c]=p;var over=D.some(function(d){return lineCount(b,r,c,p,d[0],d[1])>5;});b[r][c]=0;
+    if(over)return {type:'长连禁手',text:'黑棋形成六颗或更多连续棋子。'};
+    var a=GomokuAI.analyze(b,r,c,p);
+    if(a.fours>=2)return {type:'四四禁手',text:'黑棋一手同时形成两路四。'};
+    if(a.threes>=2)return {type:'三三禁手',text:'黑棋一手同时形成两路活三。'};
+    return null;
+  }
+  function chooseAI(b,p,level,personality,rules,progress){
+    var started=Date.now(),early=b.reduce(function(n,row){return n+row.filter(Boolean).length;},0)<=10;
+    var budget=early?180:2700,deadline=started+budget;
+    var legal=function(board,r,c,side){return !forbidden(board,r,c,side,rules);};
+    var quick=null;
+    if(level==='expert'){
+      quick=GomokuAI.choose(b,p,'easy',{ms:60,random:function(){return 0;},legal:legal});
+      if(progress&&quick)progress(quick);
+      if(!quick||quick.reason==='win'||quick.reason==='block-five'||quick.reason==='opening')return quick;
+    }
+    if(level==='expert'&&!early&&rules!=='renju'&&typeof GomokuReview!=='undefined'){
+      var proof=GomokuReview.shortLine(b,p,Math.max(1,Math.min(300,deadline-Date.now())),11);
+      if(proof.proven){var first=proof.line[0];return {r:first.r,c:first.c,reason:'proven-forcing-line',line:proof.line,depth:proof.line.length};}
+    }
+    if(level==='expert'&&Date.now()>=deadline)return quick;
+    var budgets={easy:140,medium:900,hard:2400,expert:Math.max(1,deadline-Date.now())},m=GomokuAI.choose(b,p,level,{ms:budgets[level]||900,legal:legal,onProgress:progress});
+    if(!m||!forbidden(b,m.r,m.c,p,rules))return m;
+    var list=GomokuAI.candidates(b).filter(function(x){return !forbidden(b,x.r,x.c,p,rules);}).map(function(x){var a=GomokuAI.analyze(b,x.r,x.c,p),d=GomokuAI.analyze(b,x.r,x.c,3-p),v=a.score+d.score*(personality==='steady'?1.3:personality==='attack'?0.75:1.05);return {r:x.r,c:x.c,v:v};});
+    list.sort(function(a,z){return z.v-a.v;});return list[0]||null;
+  }
+  function describe(a){if(a.win)return '这一步可以直接连成五子。';if(a.openFour)return '这一步形成活四，对方无法同时封住两端。';if(a.fours>=2)return '这一步形成双四，产生两个成五点。';if(a.fours&&a.threes)return '这一步形成四三组合，先制造强制应手再继续进攻。';if(a.threes>=2)return '这一步形成双活三，对方很难同时防守两条线。';if(a.fours)return '这一步形成冲四，迫使对方立即防守。';if(a.threes)return '这一步形成活三，为下一步活四做准备。';return '这一步兼顾中心、连接和后续发展。';}
+  function load(){try{return Object.assign({attempts:0,correct:0,totalMs:0,streak:0,best:0,types:{},games:{easy:[0,0],medium:[0,0],hard:[0,0]},mistakes:{}},JSON.parse(localStorage.getItem(KEY)||'{}'));}catch(e){return {attempts:0,correct:0,totalMs:0,streak:0,best:0,types:{},games:{easy:[0,0],medium:[0,0],hard:[0,0]},mistakes:{}};}}
+  function save(x){try{localStorage.setItem(KEY,JSON.stringify(x));}catch(e){}}
+  return {blank:blank,forbidden:forbidden,chooseAI:chooseAI,describe:describe,load:load,save:save,version:'4.0'};
+}());
+
+(function(){
+  if(typeof window==='undefined')return;
+  var worker=null,timer=null;
+  window.gomokuCancelSearch=function(){if(timer!==null){clearTimeout(timer);timer=null;}if(worker){worker.terminate();worker=null;}};
+  window.gomokuSearch=function(b,p,level,style,rules,done){
+    window.gomokuCancelSearch();
+    function fallback(){setTimeout(function(){done(GomokuPro.chooseAI(b,p,level,style,rules));},20);}
+    try{
+      var source=document.getElementById('gomoku-worker-source');
+      if(typeof Worker==='undefined'||!source){fallback();return;}
+      var url=URL.createObjectURL(new Blob([source.textContent],{type:'text/javascript'}));
+      worker=new Worker(url);URL.revokeObjectURL(url);
+      var best=null;
+      worker.onmessage=function(e){if(e.data&&e.data.progress){best=e.data.move;return;}window.gomokuCancelSearch();done(e.data);};
+      worker.onerror=function(){window.gomokuCancelSearch();if(level==='expert')done(best||GomokuPro.chooseAI(b,p,'easy',style,rules));else fallback();};
+      if(level==='expert')timer=setTimeout(function(){window.gomokuCancelSearch();done(best||GomokuPro.chooseAI(b,p,'easy',style,rules));},b.flat().filter(Boolean).length<=10?400:2800);
+      worker.postMessage({board:b,p:p,level:level,style:style,rules:rules});
+    }catch(e){window.gomokuCancelSearch();fallback();}
+  };
+}());
+
+(function(){
+  'use strict';
+  if(typeof document==='undefined')return;
+  var $=function(id){return document.getElementById(id);},latest=null,oldCapture=window.gomokuCapture,profile=GomokuPro.load(),panel;
+  window.gomokuCapture=function(g){latest=JSON.parse(JSON.stringify(g));if(oldCapture)oldCapture(g);if(g.over&&g.mode==='ai'&&!g._counted){var lev=$('level')?$('level').value:'medium',pair=profile.games[lev]||[0,0],human=($('first').value==='ai'?2:1);pair[1]++;if(g.over===human)pair[0]++;profile.games[lev]=pair;GomokuPro.save(profile);}};
+  function el(t,s,p){var x=document.createElement(t);if(s!==null&&s!==undefined)x.textContent=s;if(p)p.appendChild(x);return x;}
+  function btn(s,fn,p,cls){var x=el('button',s,p);x.onclick=fn;if(cls)x.className=cls;return x;}
+  function shell(title){panel.hidden=false;panel.innerHTML='';var h=el('header',null,panel);el('h2',title,h);btn('返回对局',function(){panel.hidden=true;},h);return el('div',null,panel);}
+  function svgBoard(box,b,click,marks){box.innerHTML='';var ns='http://www.w3.org/2000/svg',s=document.createElementNS(ns,'svg');s.setAttribute('viewBox','0 0 480 480');box.appendChild(s);function sh(t,a){var x=document.createElementNS(ns,t);Object.keys(a).forEach(function(k){x.setAttribute(k,a[k]);});s.appendChild(x);return x;}sh('rect',{width:480,height:480,fill:'#e9b767'});for(var i=0;i<15;i++){var q=30+i*30;sh('path',{d:'M30 '+q+'H450 M'+q+' 30V450',stroke:'#765027','stroke-width':1});}for(var r=0;r<15;r++)for(var c=0;c<15;c++){if(b[r][c])sh('circle',{cx:30+c*30,cy:30+r*30,r:12,fill:b[r][c]===1?'#222':'#fffaf0',stroke:'#806a51'});var hit=sh('circle',{cx:30+c*30,cy:30+r*30,r:14,fill:'transparent'});if(click)(function(rr,cc){hit.style.cursor='pointer';hit.onclick=function(){click(rr,cc);};})(r,c);} (marks||[]).forEach(function(m){sh('circle',{cx:30+m.c*30,cy:30+m.r*30,r:m.solid?12:16,fill:m.solid?'#de3535':'none',stroke:m.color||'#078c79','stroke-width':4});});}
+  function training(daily){
+    var box=shell(daily?'今日挑战 · 200题':'战术训练 · 200题'),head=el('div',null,box);head.className='pro-row';
+    var sel=el('select',null,head);['全部','简单','中等','困难'].forEach(function(v){var o=el('option',v,sel);o.value=v;});sel.value='全部';
+    btn('下一题',pick,head);el('p','简单：轻松练习，基础攻防。中等：活三、跳活三、双三、四三与预防对方组合。困难：计算对手强制应手，寻找连续进攻。',box);
+    el('p','本题库采用普通无禁手规则。答对自动继续；答错时红色棋子显示正确落点。',box);
+    var info=el('p','',box),bd=el('div',null,box);bd.className='pro-board';var actions=el('div',null,box);actions.className='pro-row';
+    var out=el('p','',box),q,start,hints=0,done=false,serial=0,routeIndex=0;
+    var storageKey='gomoku-queue-v41-'+(daily?'daily-'+new Date().toLocaleDateString():'training'),seen=[];
+    try{seen=JSON.parse(localStorage.getItem(storageKey)||'[]');if(!Array.isArray(seen))seen=[];}catch(e){}
+    btn('提示一次',function(){if(done)return;hints++;out.textContent=q.why;},actions);
+    btn('显示威胁点',function(){if(done)return;hints++;svgBoard(bd,toBoard(),guess,[{r:q.answer[0],c:q.answer[1],color:'#e39120'}]);},actions);
+    btn('查看答案',function(){finish(false);},actions);
+    btn('演示下一手',function(){if(!done){out.textContent='请先作答或查看答案。';return;}if(!q.route.length){out.textContent=q.why;return;}var b=toBoard();routeIndex=Math.min(q.route.length,routeIndex+1);q.route.slice(0,routeIndex).forEach(function(m){b[m.r][m.c]=m.p;});svgBoard(bd,b);out.textContent='路线 '+routeIndex+'/'+q.route.length+' 手（含双方应手）。'+q.why;},actions);
+    function toBoard(){var b=GomokuPro.blank();q.black.forEach(function(a){b[a[0]][a[1]]=1;});q.white.forEach(function(a){b[a[0]][a[1]]=2;});return b;}
+    function pick(){serial++;var pool=GomokuPuzzles.filter(function(x){return sel.value==='全部'||x.level===sel.value;}),fresh=pool.filter(function(x){return seen.indexOf(x.id)<0;});if(!fresh.length){seen=seen.filter(function(id){return !pool.some(function(x){return x.id===id;});});fresh=pool;}q=fresh[Math.floor(Math.random()*fresh.length)];seen.push(q.id);try{localStorage.setItem(storageKey,JSON.stringify(seen));}catch(e){}start=Date.now();hints=0;done=false;routeIndex=0;info.textContent=q.id+' · '+q.level+' · '+q.type+'｜'+q.title+'（本级 '+pool.length+' 题）';out.textContent='请点击空交叉点落黑棋。';svgBoard(bd,toBoard(),guess);}
+    function guess(r,c){if(done||toBoard()[r][c])return;finish(q.alts.concat([q.answer]).some(function(a){return a[0]===r&&a[1]===c;}));}
+    function finish(ok){if(done)return;done=true;var ms=Date.now()-start;profile.attempts++;if(ok){profile.correct++;profile.streak++;profile.best=Math.max(profile.best,profile.streak);}else{profile.streak=0;profile.mistakes[q.type]=(profile.mistakes[q.type]||0)+1;}profile.totalMs+=ms;var t=profile.types[q.type]||(profile.types[q.type]=[0,0]);t[1]++;if(ok)t[0]++;GomokuPro.save(profile);
+      svgBoard(bd,toBoard(),null,[{r:q.answer[0],c:q.answer[1],color:ok?'#078c79':'#de3535',solid:!ok}]);
+      out.textContent=ok?'正确！得分 '+Math.max(20,100-hints*20-Math.floor(ms/10000)*5)+'，即将进入下一题。':'答错了，红色棋子是正确答案。'+q.why+' 看懂后点击“下一题”。';
+      if(ok){var ticket=serial;setTimeout(function(){if(ticket===serial&&!panel.hidden&&panel.contains(box))pick();},1100);}
+    }
+    sel.onchange=pick;pick();
+  }
+  function coach(){var box=shell('AI 教练'),g=latest;if(!g||!g.moves.length){el('p','请先下一步棋，再让教练分析当前局面。',box);return;}var b=GomokuReview.position(g.moves,g.moves.length),p=g.moves[g.moves.length-1].p===1?2:1,wait=el('p','正在本地分析…',box),bd=el('div',null,box);bd.className='pro-board';svgBoard(bd,b);setTimeout(function(){var best=GomokuAI.choose(b,p,'hard',{ms:1600}),threats=GomokuAI.candidates(b).map(function(m){return {m:m,a:GomokuAI.analyze(b,m.r,m.c,p),d:GomokuAI.analyze(b,m.r,m.c,3-p)};}).filter(function(x){return x.a.win||x.d.win||x.a.openFour||x.d.openFour||x.a.threes>=2||x.d.threes>=2;}).slice(0,5);wait.textContent=best?'建议 '+GomokuReview.coord(best)+'：'+GomokuPro.describe(GomokuAI.analyze(b,best.r,best.c,p)):'当前没有可落子点。';if(best)svgBoard(bd,b,null,[{r:best.r,c:best.c}].concat(threats.map(function(x){return {r:x.m.r,c:x.m.c,color:'#e39120'};})));var ol=el('ol',null,box);threats.forEach(function(x){el('li',GomokuReview.coord(x.m)+'：'+GomokuPro.describe(x.a.score>=x.d.score?x.a:x.d),ol);});var sim=b.map(function(x){return x.slice();}),line=[];for(var i=0;i<4;i++){var side=i%2?p:3-p,m=GomokuAI.choose(sim,side,'medium',{ms:350});if(!m)break;line.push((side===1?'黑':'白')+GomokuReview.coord(m));sim[m.r][m.c]=side;}if(line.length)el('p','参考变化（4步）：'+line.join(' → ')+'。这是限时搜索建议，并非绝对唯一解。',box);},30);}
+  function profileView(){var box=shell('训练档案'),rate=profile.attempts?Math.round(profile.correct/profile.attempts*100):0;el('p','战术训练：'+profile.correct+' / '+profile.attempts+' 正确（'+rate+'%）｜最佳连续答对 '+profile.best+' 题｜平均用时 '+(profile.attempts?Math.round(profile.totalMs/profile.attempts/1000):0)+' 秒',box);var grid=el('div',null,box);grid.className='profile-grid';Object.keys(profile.types).forEach(function(k){var x=profile.types[k];el('div',k+'\n'+x[0]+'/'+x[1],grid);});['easy','medium','hard','expert'].forEach(function(k){var x=profile.games[k]||[0,0];el('p',({easy:'简单',medium:'中等',hard:'困难',expert:'专家'})[k]+'对局胜率：'+(x[1]?Math.round(x[0]/x[1]*100):0)+'%（'+x[0]+'/'+x[1]+'）',box);});var weak=Object.keys(profile.mistakes).sort(function(a,b){return profile.mistakes[b]-profile.mistakes[a];})[0];el('p',weak?'当前薄弱点：'+weak+'。建议优先练习这一类题。':'完成一些训练后，这里会显示你的薄弱点。',box);}
+  function exportGame(){if(!latest||!latest.moves.length){alert('当前还没有棋谱。');return;}var a=document.createElement('a'),blob=new Blob([JSON.stringify({format:'gomoku-offline-v1',game:latest},null,2)],{type:'application/json'});a.href=URL.createObjectURL(blob);a.download='五子棋棋谱-'+new Date().toISOString().slice(0,10)+'.json';a.click();setTimeout(function(){URL.revokeObjectURL(a.href);},500);}
+  function importGame(file){var reader=new FileReader();reader.onload=function(){try{var data=JSON.parse(reader.result),g=data.game||data;if(!g||!Array.isArray(g.moves)||!g.moves.every(function(m){return Number.isInteger(m.r)&&Number.isInteger(m.c)&&m.r>=0&&m.r<15&&m.c>=0&&m.c<15&&(m.p===1||m.p===2);}))throw Error();var h=JSON.parse(localStorage.getItem('gomoku-review-v1')||'[]');g.id='import-'+Date.now();g.date='导入 · '+new Date().toLocaleString();h.unshift(g);localStorage.setItem('gomoku-review-v1',JSON.stringify(h.slice(0,20)));alert('棋谱已导入，将重新载入并显示在复盘记录中。');location.reload();}catch(e){alert('这不是有效的五子棋棋谱文件。');}};reader.readAsText(file);}
+  function custom(){var box=shell('自定义残局'),b=GomokuPro.blank(),turn=1,info=el('p','点击棋盘摆子：第一次黑棋、第二次白棋、第三次清空。',box),bd=el('div',null,box);bd.className='pro-board';var row=el('div',null,box);row.className='pro-row';function draw(marks){svgBoard(bd,b,function(r,c){b[r][c]=(b[r][c]+1)%3;draw();},marks);}btn('AI 分析黑棋',function(){analyze(1);},row);btn('AI 分析白棋',function(){analyze(2);},row);btn('清空棋盘',function(){b=GomokuPro.blank();info.textContent='棋盘已清空。';draw();},row);function analyze(p){info.textContent='正在分析…';setTimeout(function(){var m=GomokuAI.choose(b,p,'hard',{ms:1800});if(!m){info.textContent='没有可落子点。';return;}info.textContent=(p===1?'黑':'白')+'棋建议 '+GomokuReview.coord(m)+'：'+GomokuPro.describe(GomokuAI.analyze(b,m.r,m.c,p));draw([{r:m.r,c:m.c}]);},30);}draw();}
+  function decorateCoords(){var board=$('board');if(!board||!document.body.classList.contains('show-coords'))return;Array.from(board.children).forEach(function(cell){if(cell.querySelector&&cell.querySelector('.coord-label'))return;var r=Number(cell.dataset.r),c=Number(cell.dataset.c);if(r===14){var x=el('b',String.fromCharCode(65+c),cell);x.className='coord-label col';}if(c===0){var y=el('b',String(15-r),cell);y.className='coord-label row';}});}
+  function playClick(){if(document.body.classList.contains('mute-game'))return;try{var C=window.AudioContext||window.webkitAudioContext,ctx=new C(),o=ctx.createOscillator(),g=ctx.createGain();o.frequency.value=260;g.gain.setValueAtTime(.035,ctx.currentTime);g.gain.exponentialRampToValueAtTime(.001,ctx.currentTime+.07);o.connect(g);g.connect(ctx.destination);o.start();o.stop(ctx.currentTime+.07);}catch(e){}}
+  var style=el('style','',document.head);style.textContent='.pro-panel[hidden]{display:none}.pro-panel{position:fixed;inset:0;z-index:30;background:#f7f1e7;overflow:auto;padding:24px}.pro-panel>div{max-width:820px;margin:auto}.pro-panel header{display:flex;align-items:center;justify-content:space-between}.pro-panel header button{width:auto}.pro-board{width:min(520px,100%);margin:14px auto}.pro-board svg{width:100%;display:block}.pro-row{display:flex;gap:8px;flex-wrap:wrap}.pro-row>*{flex:1;margin-top:6px}.profile-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(110px,1fr));gap:10px}.profile-grid div{white-space:pre-line;background:#fff;padding:14px;border-radius:10px;text-align:center}.coord-label{display:none;position:absolute;z-index:4;color:#60401f;font:700 9px sans-serif;pointer-events:none}body.show-coords .coord-label{display:block}.coord-label.col{bottom:0;right:2px}.coord-label.row{top:1px;left:2px}body.no-confetti .confetti{display:none}';panel=el('section',null,document.body);panel.className='pro-panel';panel.hidden=true;
+  var side=document.querySelector('.panel');btn('战术训练',function(){training(false);},side);btn('今日挑战',function(){training(true);},side,'alt');btn('AI 教练',coach,side,'alt');btn('训练档案',profileView,side,'alt');btn('导出当前棋谱',exportGame,side,'alt');
+  btn('自定义残局',custom,side,'alt');var importInput=el('input',null,side);importInput.type='file';importInput.accept='.json,application/json';importInput.hidden=true;importInput.onchange=function(){if(this.files&&this.files[0])importGame(this.files[0]);};btn('导入棋谱',function(){importInput.click();},side,'alt');
+  function toggle(label,key,cls,yes,no,def){var lab=el('label',label,side),s=el('select',null,lab);[[yes,'on'],[no,'off']].forEach(function(a){var o=el('option',a[0],s);o.value=a[1];});s.value=localStorage.getItem(key)||def||'on';function apply(){document.body.classList.toggle(cls,s.value==='on');localStorage.setItem(key,s.value);if(cls==='show-coords')decorateCoords();}s.onchange=apply;apply();return s;}
+  toggle('棋盘坐标','gomoku-coords','show-coords','显示','隐藏','on');toggle('落子音效','gomoku-sound','mute-game','关闭','开启','off');toggle('胜利彩带','gomoku-confetti','no-confetti','关闭','开启','off');
+  if($('board')){$('board').addEventListener('click',function(e){if(e.target.closest&&e.target.closest('.cell'))playClick();},true);if(typeof MutationObserver!=='undefined')new MutationObserver(decorateCoords).observe($('board'),{childList:true});decorateCoords();}
+}());
+
+</script></html>
